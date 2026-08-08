@@ -49,3 +49,11 @@ internal_docs/
 # Python bytecode
 __pycache__/
 *.pyc
+# Local agent tooling / notes (not product)
+.agents/
+.claude/
+agent.md
+claude.md
+Claude.md
+.ledgerful/
+.env
