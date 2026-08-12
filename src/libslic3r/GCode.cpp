@@ -1454,6 +1454,15 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
                     line.replace(line.find(cur_gcode_start), 3, oss.str());
                     old_pos = transformed_pos;
                 }
+                // After Tn the printer may have no valid F. Wipe-tower pure travels often omit
+                // feedrate; force travel_speed so dock→tower approaches are not crawl-slow.
+                const bool has_xy = line.find('X') != std::string::npos || line.find('Y') != std::string::npos;
+                const bool has_e  = line.find('E') != std::string::npos;
+                const bool has_f  = line.find('F') != std::string::npos;
+                if (has_xy && !has_e && !has_f) {
+                    const double travel_mm_s = std::max(1., m_print_config->travel_speed.value);
+                    line += " F" + std::to_string(int(std::floor(travel_mm_s * 60. + 0.5)));
+                }
             }
 
             gcode_out += line + "\n";
