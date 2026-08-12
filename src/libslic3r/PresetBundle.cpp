@@ -82,7 +82,18 @@ DynamicPrintConfig PresetBundle::construct_full_config(
     out.apply(FullPrintConfig::defaults());
     out.apply(printer_config);
     out.apply(print_config);
+    // Capture print-level mix defs before project_config apply. project_config is
+    // seeded with empty defaults for s_project_options keys; an empty project value
+    // must not wipe a non-empty print-preset mix definition (M4 dual registration).
+    std::string print_mixed_defs;
+    if (const ConfigOptionString *print_mixed =
+            print_config.option<ConfigOptionString>("mixed_filament_definitions"))
+        print_mixed_defs = print_mixed->value;
     out.apply(project_config);
+    if (ConfigOptionString *out_mixed = out.option<ConfigOptionString>("mixed_filament_definitions", true)) {
+        if (out_mixed->value.empty() && !print_mixed_defs.empty())
+            out_mixed->value = print_mixed_defs;
+    }
     out.apply(in_filament_presets[0].config);
 
     size_t num_filaments = in_filament_presets.size();
