@@ -4850,6 +4850,13 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionString());
 
+    def = this->add("mixed_filament_definitions", coString);
+    def->label = L("Mixed filament definitions");
+    def->tooltip = L("Serialized virtual mixed filaments (pair-mix). Rows ';' separated: "
+                     "A,B,enabled,ratio_a,ratio_b (1-based physical IDs). Example: 1,2,1,1,1");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("host_type", coEnum);
     def->label = L("Host Type");
     def->tooltip = L("Orca Slicer can upload G-code files to a printer host. This field must contain "
