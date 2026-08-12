@@ -54,7 +54,9 @@ static std::vector<std::string> s_project_options {
     "flush_multiplier",
     "nozzle_volume_type",
     "filament_map_mode",
-    "filament_map"
+    "filament_map",
+    // M4 pair-mix: also keep mix defs on project_config so full_config apply path is robust.
+    "mixed_filament_definitions",
 };
 
 //Orca: add custom as default
