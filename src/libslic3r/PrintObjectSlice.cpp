@@ -1255,7 +1255,15 @@ static bool apply_mixed_component_surface_offsets(PrintObject &print_object)
             if (layerm == nullptr || layerm->slices.empty())
                 continue;
 
-            const unsigned int filament_id = unsigned(std::max(0, layerm->region().config().outer_wall_filament_id.value));
+            unsigned int filament_id = unsigned(std::max(0, layerm->region().config().outer_wall_filament_id.value));
+            // Object/volume Change Filament is the primary mix assignment. Region
+            // outer_wall_filament_id is 0 when the process preset leaves features Default;
+            // the object extruder (virtual mix) still owns the slice.
+            if (!mixed_mgr.is_mixed(filament_id, num_physical)) {
+                unsigned int virtual_id = 0;
+                if (first_mixed_filament_for_object(print_object, &virtual_id) != nullptr)
+                    filament_id = virtual_id;
+            }
             if (!mixed_mgr.is_mixed(filament_id, num_physical))
                 continue;
 
