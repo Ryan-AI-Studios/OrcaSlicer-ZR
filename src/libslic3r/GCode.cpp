@@ -1204,6 +1204,12 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
                 toolchange_temp_override = interface_temp;
             }
             toolchange_gcode_str = gcodegen.set_extruder(new_extruder_id, tcr.print_z, false, toolchange_temp_override); // TODO: toolchange_z vs print_z
+            // Re-state travel feedrate after Tn. Wipe-tower approach moves often omit F and would
+            // otherwise inherit a slow extrusion F (or firmware default) after toolchange.
+            {
+                const double travel_mm_s = std::max(1., gcodegen.config().travel_speed.value);
+                toolchange_gcode_str += "G1 F" + std::to_string(int(std::floor(travel_mm_s * 60. + 0.5))) + "\n";
+            }
             if (gcodegen.config().enable_prime_tower) {
                 deretraction_str += gcodegen.writer().travel_to_z(z, "Force restore layer Z", true);
                 Vec3d position{gcodegen.writer().get_position()};
