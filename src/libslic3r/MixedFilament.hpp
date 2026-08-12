@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "ExPolygon.hpp"
+
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -73,5 +75,9 @@ private:
 
     std::vector<MixedFilament> m_mixed; // enabled rows only
 };
+
+// Offset mixed-region slices by a component surface bias (mm).
+// Positive contracts inward; negative expands. Empty in / failed offset → {}.
+ExPolygons apply_surface_offset(const ExPolygons &src, float offset_mm);
 
 } // namespace Slic3r

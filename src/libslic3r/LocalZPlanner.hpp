@@ -88,4 +88,29 @@ inline LocalZPassHeights plan_local_z_pair_heights(double              base_heig
     return plan_local_z_pair_heights(base_height, ratio.first, ratio.second, min_layer_height);
 }
 
+// Expand a nominal layer-height stack into rematerialized pass heights.
+// First layer is held whole (elephant-foot / first-layer flow).
+inline std::vector<double> rematerialize_layer_heights(const std::vector<double> &base_heights,
+                                                       int                       ratio_a,
+                                                       int                       ratio_b,
+                                                       double                    min_layer_height)
+{
+    std::vector<double> out;
+    out.reserve(base_heights.size() * 2);
+    for (size_t i = 0; i < base_heights.size(); ++i) {
+        if (i == 0) {
+            out.push_back(base_heights[i]);
+            continue;
+        }
+        const LocalZPassHeights h = plan_local_z_pair_heights(base_heights[i], ratio_a, ratio_b, min_layer_height);
+        if (h.split) {
+            out.push_back(h.height_a);
+            out.push_back(h.height_b);
+        } else {
+            out.push_back(base_heights[i]);
+        }
+    }
+    return out;
+}
+
 } // namespace Slic3r

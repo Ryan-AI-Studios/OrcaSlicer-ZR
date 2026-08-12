@@ -743,7 +743,10 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
         layer_tools.layer_index  = layerCount;
         layer_tools.mixed_mgr    = m_mixed_mgr;
         layer_tools.num_physical = m_num_physical;
-        if (const SubLayerPlan *pass = object.local_z_pass_at_print_z(layer->print_z))
+        const PrintObject *plan_obj = &object;
+        if (object.local_z_sublayer_plan().empty() && layer->object() != nullptr)
+            plan_obj = layer->object();
+        if (const SubLayerPlan *pass = plan_obj->local_z_pass_at_print_z(layer->print_z))
             layer_tools.local_z_physical_1based = pass->extruder_1based;
 
         // Override extruder with the next

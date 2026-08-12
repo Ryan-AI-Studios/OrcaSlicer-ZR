@@ -123,6 +123,36 @@ TEST_CASE("MixedFilament xa/xb offsets serialize without breaking M4 rows", "[Mi
     REQUIRE(mgr.component_surface_offset(3, 2, 2) == Catch::Approx(-0.1f));
 }
 
+TEST_CASE("LocalZ rematerialize stack holds first layer then 0.16+0.08", "[LocalZ][MixedFilament]")
+{
+    const std::vector<double> heights = rematerialize_layer_heights({0.20, 0.24, 0.24}, 2, 1, 0.08);
+    REQUIRE(heights.size() == 5);
+    REQUIRE(heights[0] == Catch::Approx(0.20));
+    REQUIRE(heights[1] == Catch::Approx(0.16));
+    REQUIRE(heights[2] == Catch::Approx(0.08));
+    REQUIRE(heights[3] == Catch::Approx(0.16));
+    REQUIRE(heights[4] == Catch::Approx(0.08));
+}
+
+TEST_CASE("Bias apply_surface_offset contracts a square", "[MixedFilament][Bias]")
+{
+    ExPolygon sq;
+    sq.contour = {
+        Point::new_scale(0, 0),
+        Point::new_scale(10, 0),
+        Point::new_scale(10, 10),
+        Point::new_scale(0, 10),
+    };
+    const ExPolygons src = { sq };
+    const ExPolygons contracted = apply_surface_offset(src, 0.2f);
+    const ExPolygons expanded   = apply_surface_offset(src, -0.2f);
+    REQUIRE_FALSE(contracted.empty());
+    REQUIRE_FALSE(expanded.empty());
+    REQUIRE(area(contracted) < area(src));
+    REQUIRE(area(expanded) > area(src));
+    REQUIRE(apply_surface_offset(src, 0.f).size() == src.size());
+}
+
 TEST_CASE("LocalZ pair height 0.24 at 2:1 splits to 0.16+0.08", "[LocalZ][MixedFilament]")
 {
     const LocalZPassHeights h = plan_local_z_pair_heights(0.24, 2, 1, 0.08);

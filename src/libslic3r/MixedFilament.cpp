@@ -1,4 +1,5 @@
 #include "MixedFilament.hpp"
+#include "ClipperUtils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -308,6 +309,19 @@ void MixedFilamentManager::append_physical_0based(unsigned int filament_id_1base
         out.emplace_back(filament_id_1based - 1);
     else if (filament_id_1based > num_physical)
         out.emplace_back(0); // unknown virtual → first physical (safe fallback)
+}
+
+ExPolygons apply_surface_offset(const ExPolygons &src, float offset_mm)
+{
+    if (src.empty() || std::abs(offset_mm) <= 1e-6f)
+        return src;
+    const float delta_scaled = float(scale_(std::abs(double(offset_mm))));
+    if (delta_scaled <= float(EPSILON))
+        return src;
+    ExPolygons adjusted = offset_mm > 0.f ? offset_ex(src, -delta_scaled) : offset_ex(src, delta_scaled);
+    if (!adjusted.empty() && adjusted.size() > 1)
+        adjusted = union_ex(adjusted);
+    return adjusted;
 }
 
 } // namespace Slic3r

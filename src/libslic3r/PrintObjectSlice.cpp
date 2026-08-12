@@ -1263,16 +1263,10 @@ static bool apply_mixed_component_surface_offsets(PrintObject &print_object)
             if (std::abs(offset_mm) <= EPSILON)
                 continue;
 
-            const float delta_scaled = float(scale_(std::abs(double(offset_mm))));
-            if (delta_scaled <= float(EPSILON))
-                continue;
-
             ExPolygons src = to_expolygons(layerm->slices.surfaces);
             if (src.empty())
                 continue;
-            ExPolygons adjusted = offset_mm > 0 ? offset_ex(src, -delta_scaled) : offset_ex(src, delta_scaled);
-            if (!adjusted.empty() && adjusted.size() > 1)
-                adjusted = union_ex(adjusted);
+            ExPolygons adjusted = apply_surface_offset(src, float(offset_mm));
 
             if (offset_mm < 0 && !adjusted.empty()) {
                 ExPolygons occupied_other;
@@ -1366,7 +1360,12 @@ static void build_local_z_plan(PrintObject &print_object)
             rb = g.second;
         }
 
-        const LocalZPassHeights heights = plan_local_z_pair_heights(layer.height, ra, rb, min_h);
+        // Hold first layer whole: elephant-foot / first-layer flow stay on layer 0.
+        // Remaining layers: Full-domain cube rematerialize (same XY, real heights).
+        const bool hold_first = (layer_idx == 0);
+        const LocalZPassHeights heights = hold_first
+            ? LocalZPassHeights{}
+            : plan_local_z_pair_heights(layer.height, ra, rb, min_h);
         if (!heights.split) {
             interval.sublayer_count  = 1;
             interval.sublayer_height = layer.height;
@@ -1456,8 +1455,12 @@ static LayerPtrs rematerialize_layers_from_local_z_plan(PrintObject &print_objec
             continue;
         }
 
+        // Full-domain cube approximation: copy parent XY (same vertical walls).
+        // Pass slice_z is the new layer center so later Z queries stay consistent.
+        // Not FS clip-replay / re-slice of sloped geometry.
         for (const SubLayerPlan *pass : passes) {
-            Layer *nl = print_object.add_layer(next_id++, pass->flow_height, pass->print_z, src->slice_z);
+            const coordf_t pass_slice_z = pass->print_z - 0.5 * pass->flow_height;
+            Layer *nl = print_object.add_layer(next_id++, pass->flow_height, pass->print_z, pass_slice_z);
             for (const LayerRegion *layerm : src->regions())
                 nl->add_region(&layerm->region());
             copy_layer_region_slices(nl, src);

@@ -2134,6 +2134,10 @@ void  PrintObject::copy_layers_from_shared_object()
 
         firstLayerObjSliceByVolume = m_shared_object->firstLayerObjSlice();
         firstLayerObjSliceByGroups = m_shared_object->firstLayerObjGroups();
+        // Rematerialized Local-Z layers keep 0.16/0.08 heights; ToolOrdering
+        // looks up pass tools on *this*, so the plan must travel with the copy.
+        this->set_local_z_plan(m_shared_object->local_z_intervals(),
+                               m_shared_object->local_z_sublayer_plan());
     }
 }
 
