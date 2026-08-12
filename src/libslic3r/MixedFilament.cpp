@@ -112,6 +112,17 @@ std::string MixedFilamentManager::normalize_manual_pattern(const std::string &pa
     return first_group;
 }
 
+size_t MixedFilamentManager::max_filament_id(const std::string &serialized, size_t num_physical)
+{
+    if (num_physical == 0)
+        return 0;
+    if (serialized.empty())
+        return num_physical;
+    MixedFilamentManager mgr;
+    mgr.load_definitions(serialized);
+    return mgr.total_filaments(num_physical);
+}
+
 void MixedFilamentManager::clear()
 {
     m_mixed.clear();

@@ -56,6 +56,9 @@ public:
     // Flatten separators (/,-_|:; , space) from a pattern into compact digit tokens.
     static std::string normalize_manual_pattern(const std::string &pattern);
 
+    // Physical + enabled mixes. Used by 3mf/GUI clamps so virtual IDs survive open.
+    static size_t max_filament_id(const std::string &serialized, size_t num_physical);
+
 private:
     int mixed_index_from_filament_id(unsigned int filament_id_1based, size_t num_physical) const;
 
