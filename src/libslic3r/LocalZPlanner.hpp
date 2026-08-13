@@ -88,6 +88,22 @@ inline LocalZPassHeights plan_local_z_pair_heights(double              base_heig
     return plan_local_z_pair_heights(base_height, ratio.first, ratio.second, min_layer_height);
 }
 
+// Tool for a gradient layer that cannot split (endpoint 100:0 / 0:100,
+// or a pass below min_layer_height). Dominant component wins; ties → A.
+inline unsigned int gradient_fallback_extruder_1based(const MixedFilament &mf,
+                                                      int                 ratio_a,
+                                                      int                 ratio_b,
+                                                      size_t              num_physical)
+{
+    const unsigned int a = (num_physical == 0) ? mf.component_a
+                         : std::min(std::max(mf.component_a, 1u), unsigned(num_physical));
+    const unsigned int b = (num_physical == 0) ? mf.component_b
+                         : std::min(std::max(mf.component_b, 1u), unsigned(num_physical));
+    if (ratio_b > ratio_a)
+        return b;
+    return a;
+}
+
 // Expand a nominal layer-height stack into rematerialized pass heights.
 // First layer is held whole (elephant-foot / first-layer flow).
 inline std::vector<double> rematerialize_layer_heights(const std::vector<double> &base_heights,

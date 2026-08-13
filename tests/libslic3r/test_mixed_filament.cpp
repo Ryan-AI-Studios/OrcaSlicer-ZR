@@ -202,6 +202,16 @@ TEST_CASE("LocalZ height-gradient interpolates 100:0 to 0:100", "[LocalZ][MixedF
     REQUIRE(mid_h.split);
     REQUIRE(mid_h.height_a == Catch::Approx(0.12));
     REQUIRE(mid_h.height_b == Catch::Approx(0.12));
+
+    MixedFilament mf;
+    mf.component_a = 1;
+    mf.component_b = 2;
+    REQUIRE(gradient_fallback_extruder_1based(mf, 100, 0, 4) == 1u);
+    REQUIRE(gradient_fallback_extruder_1based(mf, 0, 100, 4) == 2u);
+    // Unsplittable 3:1 at 0.20 mm (0.05 < 0.08) → dominant A, not M4 layer cadence.
+    REQUIRE_FALSE(plan_local_z_pair_heights(0.20, 3, 1, 0.08).split);
+    REQUIRE(gradient_fallback_extruder_1based(mf, 3, 1, 4) == 1u);
+    REQUIRE(gradient_fallback_extruder_1based(mf, 1, 3, 4) == 2u);
 }
 
 TEST_CASE("LocalZInterval and SubLayerPlan defaults", "[LocalZ]")

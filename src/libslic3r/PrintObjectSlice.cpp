@@ -1385,7 +1385,9 @@ static void build_local_z_plan(PrintObject &print_object)
             pass.z_hi            = interval.z_hi;
             pass.print_z         = layer.print_z;
             pass.flow_height     = layer.height;
-            pass.extruder_1based = mixed_mgr.resolve(virtual_id, num_physical, int(layer_idx));
+            pass.extruder_1based = gradient
+                ? gradient_fallback_extruder_1based(*mf, ra, rb, num_physical)
+                : mixed_mgr.resolve(virtual_id, num_physical, int(layer_idx));
             plans.emplace_back(pass);
             intervals.emplace_back(interval);
             continue;
