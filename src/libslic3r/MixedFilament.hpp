@@ -52,7 +52,7 @@ public:
     const MixedFilament *mixed_filament_from_id(unsigned int filament_id_1based, size_t num_physical) const;
 
     // Surface offset (mm) for the component that owns this mixed ID on layer_index.
-    // 0 if not mixed. Uses M4 whole-layer resolve to pick A vs B.
+    // 0 if not mixed. A → xa, B → xb, else 0 (C-layer does not inherit xb).
     float component_surface_offset(unsigned int filament_id_1based, size_t num_physical, int layer_index) const;
 
     // Resolve virtual → physical for a layer. Non-mixed IDs returned unchanged.

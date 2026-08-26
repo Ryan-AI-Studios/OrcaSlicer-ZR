@@ -335,6 +335,17 @@ TEST_CASE("MixedFilament pattern 123 without cN still 1,2,3", "[MixedFilament]")
     REQUIRE(mgr.resolve(5, 4, 2) == 3);
 }
 
+TEST_CASE("MixedFilament pattern token 3 maps to C when C is not physical 3", "[MixedFilament]")
+{
+    MixedFilamentManager mgr;
+    mgr.load_definitions("1,2,1,1,1,123,c4");
+    REQUIRE(mgr.mixed_filaments().front().component_c == 4u);
+    REQUIRE(mgr.mixed_filaments().front().manual_pattern == "123");
+    REQUIRE(mgr.resolve(5, 4, 0) == 1);
+    REQUIRE(mgr.resolve(5, 4, 1) == 2);
+    REQUIRE(mgr.resolve(5, 4, 2) == 4);
+}
+
 TEST_CASE("MixedFilament pair serialize stays exact 1,2,1,1,1", "[MixedFilament]")
 {
     MixedFilamentManager mgr;
