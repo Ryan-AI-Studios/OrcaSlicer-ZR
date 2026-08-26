@@ -2589,11 +2589,16 @@ void ModelVolume::update_extruder_count_when_delete_filament(size_t extruder_cou
                                                              size_t max_filament_id,
                                                              size_t source_palette_size)
 {
-    const size_t paint_limit = spectrum_paint_id_limit(extruder_count, max_filament_id, source_palette_size);
+    const size_t paint_limit  = spectrum_paint_id_limit(extruder_count, max_filament_id, source_palette_size);
+    const size_t old_physical = extruder_count + 1; // caller passes the post-delete physical count
     std::vector<int> used_extruders = get_extruders();
     for (int extruder_id : used_extruders) {
         if (extruder_id >= int(filament_id)) {
-            mmu_segmentation_facets.set_enforcer_block_type_limit(*this, (EnforcerBlockerType)(paint_limit), (EnforcerBlockerType)(filament_id), (EnforcerBlockerType)(replace_filament_id));
+            mmu_segmentation_facets.set_enforcer_block_type_limit(*this,
+                (EnforcerBlockerType)(paint_limit),
+                (EnforcerBlockerType)(filament_id),
+                (EnforcerBlockerType)(replace_filament_id),
+                (EnforcerBlockerType)(old_physical));
             break;
         }
     }
@@ -3508,10 +3513,11 @@ void FacetsAnnotation::get_facets(const ModelVolume& mv, std::vector<indexed_tri
 void FacetsAnnotation::set_enforcer_block_type_limit(const ModelVolume  &mv,
                                                      EnforcerBlockerType max_type,
                                                      EnforcerBlockerType to_delete_filament,
-                                                     EnforcerBlockerType replace_filament)
+                                                     EnforcerBlockerType replace_filament,
+                                                     EnforcerBlockerType remap_ceiling)
 {
     TriangleSelector selector(mv.mesh());
-    selector.deserialize(m_data, false, max_type, to_delete_filament, replace_filament);
+    selector.deserialize(m_data, false, max_type, to_delete_filament, replace_filament, remap_ceiling);
     this->set(selector);
 }
 

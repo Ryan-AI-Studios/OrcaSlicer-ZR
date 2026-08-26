@@ -739,7 +739,8 @@ public:
     void                 set_enforcer_block_type_limit(const ModelVolume  &mv,
                                                        EnforcerBlockerType max_type,
                                                        EnforcerBlockerType to_delete_filament = EnforcerBlockerType::NONE,
-                                                       EnforcerBlockerType replace_filament = EnforcerBlockerType::NONE);
+                                                       EnforcerBlockerType replace_filament = EnforcerBlockerType::NONE,
+                                                       EnforcerBlockerType remap_ceiling = EnforcerBlockerType::ExtruderMax);
     indexed_triangle_set get_facets_strict(const ModelVolume& mv, EnforcerBlockerType type) const;
     bool has_facets(const ModelVolume& mv, EnforcerBlockerType type) const;
     bool empty() const { return m_data.triangles_to_split.empty(); }

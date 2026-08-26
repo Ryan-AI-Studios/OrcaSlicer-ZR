@@ -113,10 +113,19 @@ TEST_CASE("hex state 15 round-trips; state 16 does not persist", "[paint_mix]")
     Model        model16;
     ModelVolume *vol16 = add_painted_cube(model16, {{0, 16}});
     REQUIRE(used_paint_state(*vol16, 16));
-    // TriangleSelector 4-bit packing can encode state 16; 0008 policy does not keep it.
     const std::string encoded16 = vol16->mmu_segmentation_facets.get_triangle_as_string(0);
-    CHECK_FALSE(encoded16.empty());
+    REQUIRE_FALSE(encoded16.empty());
+
+    Model        model16_rt;
+    ModelObject *obj16_rt = model16_rt.add_object("state16", "", make_cube(20., 20., 20.));
+    obj16_rt->add_instance();
+    ModelVolume *vol16_rt = obj16_rt->volumes.front();
+    vol16_rt->mmu_segmentation_facets.set_triangle_from_string(0, encoded16);
+    // 4-bit extra nibble can reload 16; persist/clamp policy still drops it.
+    CHECK(used_paint_state(*vol16_rt, 16));
     CHECK(spectrum_paint_id_limit(16, 16, 16) == 15);
+    vol16_rt->update_extruder_count(16, 16, 16);
+    CHECK_FALSE(used_paint_state(*vol16_rt, 16));
     vol16->update_extruder_count(16, 16, 16);
     CHECK_FALSE(used_paint_state(*vol16, 16));
 }
@@ -158,12 +167,12 @@ TEST_CASE("shrink to 4 with source palette size 8 leaves painted 5-8", "[paint_m
 
     Model        model_delete;
     ModelVolume *vol_del = add_painted_cube(model_delete, {{0, 5}, {1, 6}, {2, 7}, {3, 8}});
-    // Delete-filament sibling uses the same mix/source-aware max_type, so 5-8 are not wiped to NONE.
-    vol_del->update_extruder_count_when_delete_filament(4, 1, 1, 0, 8);
-    CHECK(used_paint_state(*vol_del, 4));
+    // Production passes the post-delete physical count. Mix/source IDs 5-8 must not compact.
+    vol_del->update_extruder_count_when_delete_filament(3, 1, 1, 0, 8);
     CHECK(used_paint_state(*vol_del, 5));
     CHECK(used_paint_state(*vol_del, 6));
     CHECK(used_paint_state(*vol_del, 7));
+    CHECK(used_paint_state(*vol_del, 8));
 }
 
 TEST_CASE("max_filament_id 6 leaves Mix 5-6 after update_extruder_count(4)", "[paint_mix]")
@@ -176,9 +185,9 @@ TEST_CASE("max_filament_id 6 leaves Mix 5-6 after update_extruder_count(4)", "[p
 
     Model        model_delete;
     ModelVolume *vol_del = add_painted_cube(model_delete, {{0, 5}, {1, 6}});
-    vol_del->update_extruder_count_when_delete_filament(4, 1, 1, 6, 0);
-    CHECK(used_paint_state(*vol_del, 4));
+    vol_del->update_extruder_count_when_delete_filament(3, 1, 1, 6, 0);
     CHECK(used_paint_state(*vol_del, 5));
+    CHECK(used_paint_state(*vol_del, 6));
 }
 
 TEST_CASE("disable middle of three enabled mixes after painting Mix 6 shifts IDs", "[paint_mix]")
