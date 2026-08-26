@@ -80,7 +80,8 @@ private:
 // Positive contracts inward; negative expands. Empty in / failed offset → {}.
 ExPolygons apply_surface_offset(const ExPolygons &src, float offset_mm);
 
-// 3mf FacetsAnnotation stores each nibble as hex 0-F. State 16 cannot persist.
+// Clamp/slice/gizmo persist policy. TriangleSelector 4-bit packing can encode state 16;
+// 0008 does not promise Extruder16 3mf round-trip (fold-in: cap 15).
 constexpr size_t SPECTRUM_PAINT_ID_PERSIST_CAP = 15;
 
 // Shared paint-ID clamp for update_extruder_count and the delete-filament sibling.

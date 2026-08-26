@@ -113,10 +113,34 @@ TEST_CASE("hex state 15 round-trips; state 16 does not persist", "[paint_mix]")
     Model        model16;
     ModelVolume *vol16 = add_painted_cube(model16, {{0, 16}});
     REQUIRE(used_paint_state(*vol16, 16));
-    // Hex nibble 0-F: persist/clamp cap is 15. Extruder16 cannot survive the helper.
+    // TriangleSelector 4-bit packing can encode state 16; 0008 policy does not keep it.
+    const std::string encoded16 = vol16->mmu_segmentation_facets.get_triangle_as_string(0);
+    CHECK_FALSE(encoded16.empty());
     CHECK(spectrum_paint_id_limit(16, 16, 16) == 15);
     vol16->update_extruder_count(16, 16, 16);
     CHECK_FALSE(used_paint_state(*vol16, 16));
+}
+
+TEST_CASE("deserialize max_ebt from source palette 8 keeps painted 5-8", "[paint_mix]")
+{
+    Model        model;
+    ModelVolume *vol = add_painted_cube(model, {{0, 5}, {1, 6}, {2, 7}, {3, 8}});
+    TriangleSelector keep(vol->mesh());
+    keep.deserialize(vol->mmu_segmentation_facets.get_data(), true,
+                     EnforcerBlockerType(spectrum_paint_id_limit(4, 0, 8)));
+    // set() is false when the bitstream is unchanged — that is the keep path.
+    vol->mmu_segmentation_facets.set(keep);
+    CHECK(used_paint_state(*vol, 5));
+    CHECK(used_paint_state(*vol, 6));
+    CHECK(used_paint_state(*vol, 7));
+    CHECK(used_paint_state(*vol, 8));
+
+    // Old gizmo used palette size 4 as max_ebt — that is the PR #5 Cursor wipe.
+    TriangleSelector wipe(vol->mesh());
+    wipe.deserialize(vol->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType(4));
+    REQUIRE(vol->mmu_segmentation_facets.set(wipe));
+    CHECK_FALSE(used_paint_state(*vol, 5));
+    CHECK_FALSE(used_paint_state(*vol, 8));
 }
 
 TEST_CASE("shrink to 4 with source palette size 8 leaves painted 5-8", "[paint_mix]")

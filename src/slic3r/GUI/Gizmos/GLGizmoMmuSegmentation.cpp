@@ -57,6 +57,25 @@ static std::string current_mixed_filament_definitions()
     return mixed_defs;
 }
 
+static size_t current_source_palette_size()
+{
+    PresetBundle *bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr)
+        return 0;
+    if (const ConfigOptionStrings *src = bundle->project_config.option<ConfigOptionStrings>("spectrum_source_filament_colour"))
+        return src->values.size();
+    return 0;
+}
+
+// Deserialize must not smash source/mix paint IDs that the ModelVolume clamp keeps
+// (Adopt → 4 physicals, source palette 8, or Mix 5+). Palette swatches can be shorter.
+static EnforcerBlockerType paint_deserialize_max_ebt(size_t physical_n, size_t palette_n)
+{
+    const size_t mix_aware = MixedFilamentManager::max_filament_id(current_mixed_filament_definitions(), physical_n);
+    const size_t limit     = spectrum_paint_id_limit(physical_n, std::max(palette_n, mix_aware), current_source_palette_size());
+    return EnforcerBlockerType(limit);
+}
+
 static std::vector<ColorRGBA> paint_palette_colors(std::vector<std::string> *tooltips, size_t *physical_count)
 {
     std::vector<ColorRGBA> colors = wxGetApp().plater()->get_extruders_colors();
@@ -803,6 +822,8 @@ void GLGizmoMmuSegmentation::init_model_triangle_selectors()
             continue;
 
         int extruder_idx = (mv->extruder_id() > 0) ? mv->extruder_id() - 1 : 0;
+        if (extruder_idx < 0 || size_t(extruder_idx) >= m_extruders_colors.size())
+            extruder_idx = 0;
         std::vector<ColorRGBA> ebt_colors;
         ebt_colors.push_back(m_extruders_colors[size_t(extruder_idx)]);
         ebt_colors.insert(ebt_colors.end(), m_extruders_colors.begin(), m_extruders_colors.end());
@@ -811,7 +832,7 @@ void GLGizmoMmuSegmentation::init_model_triangle_selectors()
         const TriangleMesh* mesh = &mv->mesh();
         m_triangle_selectors.emplace_back(std::make_unique<TriangleSelectorPatch>(*mesh, ebt_colors, 0.2));
         // Reset of TriangleSelector is done inside TriangleSelectorMmGUI's constructor, so we don't need it to perform it again in deserialize().
-        EnforcerBlockerType max_ebt = (EnforcerBlockerType)std::min(m_extruders_colors.size(), (size_t)EnforcerBlockerType::ExtruderMax);
+        EnforcerBlockerType max_ebt = paint_deserialize_max_ebt(m_physical_extruder_count, m_extruders_colors.size());
         m_triangle_selectors.back()->deserialize(mv->mmu_segmentation_facets.get_data(), false, max_ebt);
         m_triangle_selectors.back()->request_update_render_data();
         m_triangle_selectors.back()->set_wireframe_needed(true);
@@ -825,6 +846,8 @@ void GLGizmoMmuSegmentation::update_triangle_selectors_colors()
         TriangleSelectorPatch* selector = dynamic_cast<TriangleSelectorPatch*>(m_triangle_selectors[i].get());
         int extruder_idx = m_volumes_extruder_idxs[i];
         int extruder_color_idx = std::max(0, extruder_idx - 1);
+        if (size_t(extruder_color_idx) >= m_extruders_colors.size())
+            extruder_color_idx = 0;
         std::vector<ColorRGBA> ebt_colors;
         ebt_colors.push_back(m_extruders_colors[extruder_color_idx]);
         ebt_colors.insert(ebt_colors.end(), m_extruders_colors.begin(), m_extruders_colors.end());
