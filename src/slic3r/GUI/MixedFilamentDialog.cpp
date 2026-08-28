@@ -349,19 +349,22 @@ wxString MixedFilamentDialog::candidate_label(const MixMatchResult &r,
                             double(r.distance), min_share);
 }
 
-void MixedFilamentDialog::refresh_candidates()
+void MixedFilamentDialog::refresh_candidates(bool preserve_selection)
 {
     if (m_candidate_list == nullptr || m_min_mix_slider == nullptr)
         return;
 
     MixMatchResult keep;
-    const int      prev_sel = m_candidate_list->GetSelection();
-    if (prev_sel >= 0 && size_t(prev_sel) < m_candidates.size())
-        keep = m_candidates[size_t(prev_sel)];
+    if (preserve_selection) {
+        const int prev_sel = m_candidate_list->GetSelection();
+        if (prev_sel >= 0 && size_t(prev_sel) < m_candidates.size())
+            keep = m_candidates[size_t(prev_sel)];
+    }
 
     ColorRGB target;
     m_candidates.clear();
     m_candidate_list->Clear();
+    m_candidates_target_valid = false;
     if (!parse_target_color(target)) {
         refresh_predicted_swatch();
         return;
@@ -370,6 +373,8 @@ void MixedFilamentDialog::refresh_candidates()
     const std::vector<ColorRGB> physicals = live_physical_colors();
     const int                   min_pct   = m_min_mix_slider->GetValue();
     m_candidates = match_printable_candidates(target, physicals, nullptr, 4, min_pct, 12);
+    m_candidates_target       = target;
+    m_candidates_target_valid = true;
 
     const std::vector<std::string> names_cmik{"C", "M", "Y", "K"};
     const std::vector<std::string> *slot_names =
@@ -393,6 +398,8 @@ void MixedFilamentDialog::refresh_candidates()
         refresh_predicted_swatch();
         return;
     }
+    // Target hex/picker: ranked best ([0]), including Physical when dark-neutral/pure wins.
+    // Min Mix slider: keep prior recipe/Physical when it survived the filter (SHOULD).
     if (select < 0)
         select = 0;
     m_suppress_events = true;
@@ -421,7 +428,7 @@ void MixedFilamentDialog::on_min_mix_slider(wxCommandEvent &)
     if (m_min_mix_slider == nullptr || m_min_mix_label == nullptr)
         return;
     m_min_mix_label->SetLabel(wxString::Format(_L("Min mix: %d%%"), m_min_mix_slider->GetValue()));
-    refresh_candidates();
+    refresh_candidates(true);
 }
 
 void MixedFilamentDialog::on_target_colour_changed(wxColourPickerEvent &)
@@ -474,7 +481,9 @@ void MixedFilamentDialog::on_create_mix_from_color(wxCommandEvent &)
         return;
     }
 
-    refresh_candidates();
+    // Rebuild only when the list is stale for this target; keep the user's pick when it survives.
+    const bool same_target = m_candidates_target_valid && m_candidates_target == target;
+    refresh_candidates(same_target);
     if (m_candidates.empty()) {
         MessageDialog(this, _L("Could not match a printable mix for that color."), _L("Mixed Filaments"),
                       wxOK | wxICON_WARNING)
@@ -486,18 +495,12 @@ void MixedFilamentDialog::on_create_mix_from_color(wxCommandEvent &)
     const MixMatchResult *selected =
         (sel >= 0 && size_t(sel) < m_candidates.size()) ? &m_candidates[size_t(sel)] : &m_candidates.front();
 
-    if (selected->kind == MixMatchResult::Kind::Physical) {
-        MessageDialog(this,
-                      wxString::Format(_L("Closest is filament %u"), selected->physical_id),
-                      _L("Mixed Filaments"), wxOK | wxICON_INFORMATION)
-            .ShowModal();
-        return;
-    }
-
-    // Selected Mix, else first Mix still present after the min-share filter.
-    const MixMatchResult *mix_to_add =
-        (selected->kind == MixMatchResult::Kind::Mix) ? selected : nullptr;
-    if (mix_to_add == nullptr) {
+    // Selected Mix → append. Selected / best Physical → informational modal (0010 behavior).
+    // No selection → first Mix if any, else Physical modal.
+    const MixMatchResult *mix_to_add = nullptr;
+    if (selected->kind == MixMatchResult::Kind::Mix) {
+        mix_to_add = selected;
+    } else if (sel < 0) {
         for (const MixMatchResult &c : m_candidates) {
             if (c.kind == MixMatchResult::Kind::Mix) {
                 mix_to_add = &c;
@@ -506,6 +509,13 @@ void MixedFilamentDialog::on_create_mix_from_color(wxCommandEvent &)
         }
     }
     if (mix_to_add == nullptr) {
+        if (selected->kind == MixMatchResult::Kind::Physical) {
+            MessageDialog(this,
+                          wxString::Format(_L("Closest is filament %u"), selected->physical_id),
+                          _L("Mixed Filaments"), wxOK | wxICON_INFORMATION)
+                .ShowModal();
+            return;
+        }
         MessageDialog(this, _L("Could not match a printable mix for that color."), _L("Mixed Filaments"),
                       wxOK | wxICON_WARNING)
             .ShowModal();

@@ -49,7 +49,8 @@ private:
     void on_candidate_select(wxCommandEvent &evt);
     void on_min_mix_slider(wxCommandEvent &evt);
     void refresh_predicted_swatch();
-    void refresh_candidates();
+    // preserve_selection: Min Mix slider only (SHOULD). Hex/picker always reset to ranked [0].
+    void refresh_candidates(bool preserve_selection = false);
     bool parse_target_color(ColorRGB &out) const;
     wxString candidate_label(const MixMatchResult &r, const std::vector<std::string> *slot_names) const;
 
@@ -61,6 +62,8 @@ private:
 
     std::vector<MixedFilament>  m_rows;
     std::vector<MixMatchResult> m_candidates;
+    ColorRGB                    m_candidates_target;
+    bool                        m_candidates_target_valid{false};
     int                         m_selected_row{-1};
     bool                        m_suppress_events{false};
 
