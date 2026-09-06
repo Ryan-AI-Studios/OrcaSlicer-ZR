@@ -1,7 +1,9 @@
 #include "TriangleSelector.hpp"
 #include "Model.hpp"
 #include "AABBTreeIndirect.hpp"
+#include "AABBTreeLines.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <boost/container/small_vector.hpp>
@@ -11,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <tbb/parallel_for.h>
 #include <unordered_map>
 
@@ -25,6 +28,20 @@ bool cancel_requested(const std::atomic<bool> *cancel)
 {
     return cancel != nullptr && cancel->load(std::memory_order_relaxed);
 }
+
+// ZR FDM leaf-edge floor (Bambu repair RegionPaintTargetEdge). Not Cut BoundaryLeafAreaRatio.
+constexpr float  kBoundaryMm                 = 0.2f;
+constexpr int    kMixBoundaryMaxDepth        = 8;
+constexpr float  kRepairNoneDistanceMm       = 1.0f;
+constexpr size_t kMixBoundaryNodeBudget      = 65536;
+constexpr size_t kInheritCancelPollEvery     = 4096;
+constexpr size_t kReprojectCancelPollEvery   = 64;
+
+Vec3f triangle_centroid(const Vec3f &v0, const Vec3f &v1, const Vec3f &v2)
+{
+    return (v0 + v1 + v2) / 3.f;
+}
+
 }
 
 // Check if the line is whole inside the sphere, or it is partially inside (intersecting) the sphere.
@@ -247,6 +264,46 @@ static bool is_point_inside_triangle(const Vec3f &pt, const Vec3f &p1, const Vec
 {
     Vec3f barycentric_cords = Barycentric::calc(pt, p1, p2, p3);
     return std::all_of(begin(barycentric_cords), end(barycentric_cords), [](float cord) { return 0.f <= cord && cord <= 1.0; });
+}
+
+static bool triangle_approaches_lines(
+    const Vec3f &v0,
+    const Vec3f &v1,
+    const Vec3f &v2,
+    AABBTreeLines::LinesDistancer<Linef3> &distancer,
+    double radius)
+{
+    if (distancer.get_lines().empty())
+        return false;
+
+    const Vec3d p0 = v0.cast<double>();
+    const Vec3d p1 = v1.cast<double>();
+    const Vec3d p2 = v2.cast<double>();
+    const Vec3d centroid = (p0 + p1 + p2) / 3.;
+    const Vec3d m01 = (p0 + p1) * 0.5;
+    const Vec3d m12 = (p1 + p2) * 0.5;
+    const Vec3d m20 = (p2 + p0) * 0.5;
+    const Vec3d samples[] = {p0, p1, p2, centroid, m01, m12, m20};
+    for (const Vec3d &p : samples) {
+        if (distancer.distance_from_lines<false>(p) <= radius)
+            return true;
+    }
+
+    const Linef3 edges[] = {Linef3(p0, p1), Linef3(p1, p2), Linef3(p2, p0)};
+    for (const Linef3 &edge : edges) {
+        if (!distancer.intersections_with_line<false>(edge).empty())
+            return true;
+    }
+
+    const double circum = std::sqrt(std::max((p0 - centroid).squaredNorm(), std::max((p1 - centroid).squaredNorm(), (p2 - centroid).squaredNorm())));
+    const std::vector<size_t> nearby = distancer.all_lines_in_radius(centroid, circum + radius);
+    for (size_t idx : nearby) {
+        const Linef3 &ln = distancer.get_line(idx);
+        if (is_point_inside_triangle(ln.a.cast<float>(), v0, v1, v2) ||
+            is_point_inside_triangle(ln.b.cast<float>(), v0, v1, v2))
+            return true;
+    }
+    return false;
 }
 
 int TriangleSelector::select_unsplit_triangle(const Vec3f &hit, int facet_idx, const Vec3i32 &neighbors) const
@@ -2941,6 +2998,326 @@ TriangleSelector::TriangleSplittingData TriangleSelector::classify_region_painti
     return target_selector.serialize();
 }
 
+void TriangleSelector::collect_mix_boundary_segments(std::vector<Linef3> &out) const
+{
+    const auto adj = precompute_all_neighbors().first;
+    for (int i = 0; i < int(m_triangles.size()); ++i) {
+        const Triangle &tr = m_triangles[i];
+        if (!tr.valid() || tr.is_split() || tr.get_state() == EnforcerBlockerType::NONE)
+            continue;
+        if (i >= int(adj.size()))
+            continue;
+        const EnforcerBlockerType state = tr.get_state();
+        const Vec3i32 &nbs = adj[i];
+        for (int e = 0; e < 3; ++e) {
+            const int nb = nbs[e];
+            if (nb < 0 || nb >= int(m_triangles.size()))
+                continue;
+            const Triangle &ntr = m_triangles[nb];
+            if (!ntr.valid())
+                continue;
+            bool different = false;
+            if (!ntr.is_split()) {
+                different = ntr.get_state() != state;
+            } else {
+                std::vector<int> touching;
+                append_touching_subtriangles(nb, tr.verts_idxs[(e + 1) % 3], tr.verts_idxs[e], touching);
+                for (int t : touching) {
+                    if (t < 0 || t >= int(m_triangles.size()))
+                        continue;
+                    const Triangle &touch = m_triangles[t];
+                    if (touch.valid() && !touch.is_split() && touch.get_state() != state) {
+                        different = true;
+                        break;
+                    }
+                }
+            }
+            if (!different)
+                continue;
+            const Vec3f &a = m_vertices[tr.verts_idxs[e]].v;
+            const Vec3f &b = m_vertices[tr.verts_idxs[(e + 1) % 3]].v;
+            if ((a - b).squaredNorm() <= 0.f)
+                continue;
+            out.emplace_back(a.cast<double>(), b.cast<double>());
+        }
+    }
+}
+
+int TriangleSelector::closest_unsplit_leaf(int root_idx, const Vec3f &point) const
+{
+    if (root_idx < 0 || root_idx >= int(m_triangles.size()))
+        return -1;
+    int best = -1;
+    float best_d2 = 0.f;
+    std::vector<int> stack;
+    stack.push_back(root_idx);
+    while (!stack.empty()) {
+        const int idx = stack.back();
+        stack.pop_back();
+        const Triangle &tr = m_triangles[idx];
+        if (!tr.valid())
+            continue;
+        if (tr.is_split()) {
+            const int nchild = tr.number_of_split_sides() + 1;
+            for (int i = 0; i < nchild; ++i)
+                stack.push_back(tr.children[i]);
+            continue;
+        }
+        const Vec3f c = triangle_centroid(m_vertices[tr.verts_idxs[0]].v,
+                                          m_vertices[tr.verts_idxs[1]].v,
+                                          m_vertices[tr.verts_idxs[2]].v);
+        const float d2 = (c - point).squaredNorm();
+        if (best < 0 || d2 < best_d2) {
+            best = idx;
+            best_d2 = d2;
+        }
+    }
+    return best;
+}
+
+EnforcerBlockerType TriangleSelector::query_unsplit_from_root(int root_idx, const Vec3f &point) const
+{
+    if (root_idx < 0 || root_idx >= m_orig_size_indices)
+        return EnforcerBlockerType::NONE;
+    const Triangle &root = m_triangles[root_idx];
+    if (!root.valid())
+        return EnforcerBlockerType::NONE;
+    int leaf = select_unsplit_triangle(point, root_idx);
+    // Barycentric 0..1 is strict; jitter on a known split root must not drop to NONE.
+    if (leaf < 0)
+        leaf = closest_unsplit_leaf(root_idx, point);
+    if (leaf < 0 || leaf >= int(m_triangles.size()))
+        return EnforcerBlockerType::NONE;
+    const Triangle &tr = m_triangles[leaf];
+    if (!tr.valid() || tr.is_split())
+        return EnforcerBlockerType::NONE;
+    return tr.get_state();
+}
+
+void TriangleSelector::split_until_homogeneous(
+    int facet_idx,
+    const std::function<EnforcerBlockerType(const Vec3f &)> &query_state,
+    size_t &node_budget)
+{
+    bool budget_warned = false;
+    split_until_homogeneous(facet_idx, m_neighbors[facet_idx], query_state, 0, node_budget, budget_warned);
+}
+
+void TriangleSelector::split_until_homogeneous(
+    int facet_idx,
+    const Vec3i32 &neighbors,
+    const std::function<EnforcerBlockerType(const Vec3f &)> &query_state,
+    int depth,
+    size_t &node_budget,
+    bool &budget_warned)
+{
+    if (facet_idx < 0 || facet_idx >= int(m_triangles.size()))
+        return;
+    Triangle *tr = &m_triangles[facet_idx];
+    if (!tr->valid())
+        return;
+
+    if (tr->is_split()) {
+        const int nchild = tr->number_of_split_sides() + 1;
+        int child_ids[4];
+        Vec3i32 child_nbs[4];
+        for (int i = 0; i < nchild; ++i) {
+            child_ids[i] = tr->children[i];
+            child_nbs[i] = child_neighbors(*tr, neighbors, i);
+        }
+        for (int i = 0; i < nchild; ++i)
+            split_until_homogeneous(child_ids[i], child_nbs[i], query_state, depth + 1, node_budget, budget_warned);
+        return;
+    }
+
+    const Vec3f &v0 = m_vertices[tr->verts_idxs[0]].v;
+    const Vec3f &v1 = m_vertices[tr->verts_idxs[1]].v;
+    const Vec3f &v2 = m_vertices[tr->verts_idxs[2]].v;
+    const Vec3f centroid = triangle_centroid(v0, v1, v2);
+    // Inset from vertices so Mix-boundary edge samples do not jitter Mix IDs.
+    const Vec3f samples[] = {
+        centroid,
+        v0 * 0.8f + centroid * 0.2f,
+        v1 * 0.8f + centroid * 0.2f,
+        v2 * 0.8f + centroid * 0.2f,
+    };
+    EnforcerBlockerType seen[4];
+    int nseen = 0;
+    for (const Vec3f &p : samples) {
+        const EnforcerBlockerType st = query_state(p);
+        bool found = false;
+        for (int i = 0; i < nseen; ++i) {
+            if (seen[i] == st) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            seen[nseen++] = st;
+    }
+
+    const EnforcerBlockerType categorical = query_state(centroid);
+    if (nseen <= 1) {
+        tr->set_state(nseen == 1 ? seen[0] : categorical);
+        return;
+    }
+
+    const float sides[3] = {
+        (v2 - v1).squaredNorm(),
+        (v0 - v2).squaredNorm(),
+        (v1 - v0).squaredNorm(),
+    };
+    const bool at_edge_floor = sides[0] <= m_edge_limit_sqr && sides[1] <= m_edge_limit_sqr && sides[2] <= m_edge_limit_sqr;
+    if (at_edge_floor || depth >= kMixBoundaryMaxDepth || node_budget == 0) {
+        if (node_budget == 0 && !budget_warned) {
+            BOOST_LOG_TRIVIAL(warning) << "Mix-boundary dest subdivision stopped: node budget exhausted";
+            budget_warned = true;
+        }
+        tr->set_state(categorical);
+        return;
+    }
+
+    boost::container::small_vector<int, 3> sides_to_split;
+    int side_to_keep = -1;
+    for (int pt_idx = 0; pt_idx < 3; ++pt_idx) {
+        if (sides[pt_idx] > m_edge_limit_sqr)
+            sides_to_split.push_back(pt_idx);
+        else
+            side_to_keep = pt_idx;
+    }
+    if (sides_to_split.empty()) {
+        tr->set_state(categorical);
+        return;
+    }
+
+    const EnforcerBlockerType old_state = tr->get_state();
+    tr->set_division(int(sides_to_split.size()),
+                     sides_to_split.size() == 2 ? side_to_keep : sides_to_split[0]);
+    perform_split(facet_idx, neighbors, old_state);
+    tr = &m_triangles[facet_idx];
+    const int nchild = tr->number_of_split_sides() + 1;
+    if (node_budget < size_t(nchild))
+        node_budget = 0;
+    else
+        node_budget -= size_t(nchild);
+
+    int child_ids[4];
+    Vec3i32 child_nbs[4];
+    for (int i = 0; i < nchild; ++i) {
+        child_ids[i] = tr->children[i];
+        child_nbs[i] = child_neighbors(*tr, neighbors, i);
+    }
+    for (int i = 0; i < nchild; ++i)
+        split_until_homogeneous(child_ids[i], child_nbs[i], query_state, depth + 1, node_budget, budget_warned);
+}
+
+TriangleSelector::TriangleSplittingData TriangleSelector::reproject_painting(
+    const indexed_triangle_set& source_its,
+    const TriangleSplittingData& source_painting,
+    const indexed_triangle_set& target_its,
+    const Transform3d& target_transform,
+    const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
+    const std::atomic<bool> *cancel,
+    const std::vector<int>* source_face_ids)
+{
+    TriangleSplittingData result;
+    if (source_painting.bitstream.empty() || target_its.indices.empty() || cancel_requested(cancel))
+        return result;
+    if (source_face_ids && source_face_ids->size() != target_its.indices.size())
+        return result;
+
+    TriangleMesh source_mesh(source_its);
+    TriangleSelector source_selector(source_mesh);
+    source_selector.deserialize(source_painting, false);
+
+    std::vector<Linef3> mix_lines;
+    source_selector.collect_mix_boundary_segments(mix_lines);
+    AABBTreeLines::LinesDistancer<Linef3> mix_distancer(std::move(mix_lines));
+
+    TriangleMesh target_mesh(target_its);
+    target_mesh.transform(target_transform);
+    TriangleSelector target_selector(target_mesh);
+    if (existing_painting)
+        target_selector.deserialize(existing_painting->get(), false);
+    target_selector.set_edge_limit(kBoundaryMm);
+
+    AABBTreeIndirect::Tree3f source_tree;
+    const bool repair_path = source_face_ids == nullptr;
+    if (repair_path && !source_mesh.its.indices.empty())
+        source_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(source_mesh.its.vertices, source_mesh.its.indices);
+
+    const auto query_cut = [&](int src_id, const Vec3f &p) -> EnforcerBlockerType {
+        return source_selector.query_unsplit_from_root(src_id, p);
+    };
+    const auto query_repair = [&](const Vec3f &p) -> EnforcerBlockerType {
+        if (source_tree.empty())
+            return EnforcerBlockerType::NONE;
+        size_t hit = size_t(-1);
+        Vec3f closest = Vec3f::Zero();
+        const float d2 = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
+            source_mesh.its.vertices, source_mesh.its.indices, source_tree, p, hit, closest);
+        if (d2 < 0.f || hit == size_t(-1) || d2 > kRepairNoneDistanceMm * kRepairNoneDistanceMm)
+            return EnforcerBlockerType::NONE;
+        return source_selector.query_unsplit_from_root(int(hit), closest);
+    };
+
+    const size_t n = target_mesh.its.indices.size();
+    std::vector<char> near_boundary(n, 0);
+    std::vector<EnforcerBlockerType> interior_states(n, EnforcerBlockerType::NONE);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, n), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i != range.end(); ++i) {
+            if ((i % kReprojectCancelPollEvery) == 0 && cancel_requested(cancel))
+                continue;
+            if (cancel_requested(cancel))
+                continue;
+            if (source_face_ids) {
+                const int src_id = (*source_face_ids)[i];
+                if (src_id < 0 || src_id >= source_selector.m_orig_size_indices)
+                    continue;
+            }
+            const Vec3i32 &face = target_mesh.its.indices[i];
+            const Vec3f &dv0 = target_mesh.its.vertices[face(0)];
+            const Vec3f &dv1 = target_mesh.its.vertices[face(1)];
+            const Vec3f &dv2 = target_mesh.its.vertices[face(2)];
+            const bool hits_boundary = triangle_approaches_lines(dv0, dv1, dv2, mix_distancer, double(kBoundaryMm));
+            if (hits_boundary) {
+                near_boundary[i] = 1;
+                continue;
+            }
+            const Vec3f centroid = triangle_centroid(dv0, dv1, dv2);
+            interior_states[i] = source_face_ids ? query_cut((*source_face_ids)[i], centroid) : query_repair(centroid);
+        }
+    });
+
+    if (cancel_requested(cancel))
+        return {};
+
+    size_t node_budget = kMixBoundaryNodeBudget;
+    for (size_t i = 0; i < n; ++i) {
+        if ((i % kReprojectCancelPollEvery) == 0 && cancel_requested(cancel))
+            return {};
+        if (source_face_ids) {
+            const int src_id = (*source_face_ids)[i];
+            if (src_id < 0 || src_id >= source_selector.m_orig_size_indices)
+                continue;
+        }
+        if (near_boundary[i]) {
+            const auto query = [&, i](const Vec3f &p) -> EnforcerBlockerType {
+                if (source_face_ids)
+                    return query_cut((*source_face_ids)[i], p);
+                return query_repair(p);
+            };
+            target_selector.split_until_homogeneous(int(i), query, node_budget);
+        } else if (interior_states[i] != EnforcerBlockerType::NONE) {
+            target_selector.set_facet(int(i), interior_states[i]);
+        }
+    }
+
+    if (cancel_requested(cancel))
+        return {};
+    return target_selector.serialize();
+}
+
 TriangleSelector::TriangleSplittingData TriangleSelector::inherit_painting(
     const indexed_triangle_set& source_its,
     const TriangleSplittingData& source_painting,
@@ -2958,34 +3335,42 @@ TriangleSelector::TriangleSplittingData TriangleSelector::inherit_painting(
     TriangleSelector source_selector(source_mesh);
     source_selector.deserialize(source_painting, false);
 
+    std::vector<Linef3> mix_lines;
+    source_selector.collect_mix_boundary_segments(mix_lines);
+    AABBTreeLines::LinesDistancer<Linef3> mix_distancer(std::move(mix_lines));
+
     TriangleMesh dest_mesh(dest_its);
     TriangleSelector dest_selector(dest_mesh);
+    dest_selector.set_edge_limit(kBoundaryMm);
 
-    constexpr size_t poll_every = 4096;
+    size_t node_budget = kMixBoundaryNodeBudget;
     for (size_t i = 0; i < dest_its.indices.size(); ++i) {
-        if ((i % poll_every) == 0 && cancel_requested(cancel))
+        if ((i % kInheritCancelPollEvery) == 0 && cancel_requested(cancel))
             return {};
         const int src_id = source_face_ids[i];
         if (src_id < 0 || src_id >= source_selector.m_orig_size_indices)
             continue;
 
-        const Triangle& src_orig = source_selector.m_triangles[src_id];
+        const Triangle &src_orig = source_selector.m_triangles[src_id];
         if (!src_orig.valid())
             continue;
 
-        EnforcerBlockerType state = EnforcerBlockerType::NONE;
-        if (!src_orig.is_split()) {
-            state = src_orig.get_state();
-        } else {
-            const Vec3i32& face = dest_its.indices[i];
-            const Vec3f centroid = (dest_its.vertices[face(0)] + dest_its.vertices[face(1)] + dest_its.vertices[face(2)]) / 3.f;
-            const int leaf = source_selector.select_unsplit_triangle(centroid, src_id);
-            if (leaf < 0)
-                continue;
-            state = source_selector.m_triangles[leaf].get_state();
+        const Vec3i32 &face = dest_its.indices[i];
+        const Vec3f &dv0 = dest_its.vertices[face(0)];
+        const Vec3f &dv1 = dest_its.vertices[face(1)];
+        const Vec3f &dv2 = dest_its.vertices[face(2)];
+        const bool hits_boundary = triangle_approaches_lines(dv0, dv1, dv2, mix_distancer, double(kBoundaryMm));
+        if (!src_orig.is_split() && !hits_boundary) {
+            const EnforcerBlockerType state = src_orig.get_state();
+            if (state != EnforcerBlockerType::NONE)
+                dest_selector.set_facet(int(i), state);
+            continue;
         }
-        if (state != EnforcerBlockerType::NONE)
-            dest_selector.set_facet(int(i), state);
+
+        const auto query = [&](const Vec3f &p) -> EnforcerBlockerType {
+            return source_selector.query_unsplit_from_root(src_id, p);
+        };
+        dest_selector.split_until_homogeneous(int(i), query, node_budget);
     }
 
     if (cancel_requested(cancel))
