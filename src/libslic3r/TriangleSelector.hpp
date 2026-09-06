@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cfloat>
+#include <functional>
 #include <vector>
 #include "Point.hpp"
 #include "TriangleMesh.hpp"
@@ -443,6 +444,18 @@ public:
         const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
         const std::atomic<bool> *cancel = nullptr);
 
+    // Reproject painting by subdividing dest annotation along ephemeral Mix-boundary edges.
+    // Repair: no face ids (AABB nearest source point). Cut: optional source_face_ids.
+    // `source_face_ids[i] < 0` stays NONE (caps). Distance > 1 mm → NONE (hole fills).
+    static TriangleSplittingData reproject_painting(
+        const indexed_triangle_set& source_its,
+        const TriangleSplittingData& source_painting,
+        const indexed_triangle_set& target_its,
+        const Transform3d& target_transform,
+        const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting,
+        const std::atomic<bool> *cancel = nullptr,
+        const std::vector<int>* source_face_ids = nullptr);
+
     // Inherit painting onto dest faces using source-face ids from cut_mesh.
     // `source_face_ids[i] < 0` stays NONE. Caps / unknown ids are not painted.
     static TriangleSplittingData inherit_painting(
@@ -451,6 +464,13 @@ public:
         const indexed_triangle_set& dest_its,
         const std::vector<int>& source_face_ids,
         const std::atomic<bool> *cancel = nullptr);
+
+    // Cursor-free dest subdivision along Mix-boundary. Does not touch m_cursor.
+    // Caller must set_edge_limit first (ZR FDM leaf-edge floor kBoundaryMm = 0.2f).
+    void split_until_homogeneous(
+        int facet_idx,
+        const std::function<EnforcerBlockerType(const Vec3f &)> &query_state,
+        size_t &node_budget);
 
 protected:
     // Triangle and info about how it's split.
@@ -566,6 +586,16 @@ private:
     int  push_triangle(int a, int b, int c, int source_triangle, EnforcerBlockerType state = EnforcerBlockerType{0});
     void perform_split(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType old_state);
     Vec3i32 child_neighbors(const Triangle &tr, const Vec3i32 &neighbors, int child_idx) const;
+    void collect_mix_boundary_segments(std::vector<Linef3> &out) const;
+    int closest_unsplit_leaf(int root_idx, const Vec3f &point) const;
+    EnforcerBlockerType query_unsplit_from_root(int root_idx, const Vec3f &point) const;
+    void split_until_homogeneous(
+        int facet_idx,
+        const Vec3i32 &neighbors,
+        const std::function<EnforcerBlockerType(const Vec3f &)> &query_state,
+        int depth,
+        size_t &node_budget,
+        bool &budget_warned);
     Vec3i32 child_neighbors_propagated(const Triangle &tr, const Vec3i32 &neighbors_propagated, int child_idx, const Vec3i32 &child_neighbors) const;
     // Return child of itriangle at a CCW oriented side (vertexi, vertexj), either first or 2nd part.
     // If itriangle == -1 or if the side sharing (vertexi, vertexj) is not split, return -1.

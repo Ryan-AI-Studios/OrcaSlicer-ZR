@@ -695,3 +695,156 @@ TEST_CASE("classify_region_painting already canceled returns empty", "[spectrum_
 
     REQUIRE(result.bitstream.empty());
 }
+
+namespace {
+
+bool its_has_vertex_absent_from(const indexed_triangle_set &painted, const indexed_triangle_set &dest_its)
+{
+    auto same = [](const Vec3f &p, const Vec3f &q) {
+        return (p - q).squaredNorm() < 1e-8f;
+    };
+    for (const Vec3f &v : painted.vertices) {
+        bool in_dest = false;
+        for (const Vec3f &d : dest_its.vertices) {
+            if (same(v, d)) {
+                in_dest = true;
+                break;
+            }
+        }
+        if (!in_dest)
+            return true;
+    }
+    return false;
+}
+
+indexed_triangle_set dest_with_opposite_diagonal(const indexed_triangle_set &src)
+{
+    indexed_triangle_set dest = src;
+    REQUIRE(dest.indices.size() > 1);
+    // Originals 0 and 1 share the z=0 square diagonal. Keep them so Mix 5/6
+    // source triples remain dest faces, and add the opposite-diagonal pair that
+    // straddles that Mix-boundary.
+    dest.indices.push_back({1, 2, 3});
+    dest.indices.push_back({1, 3, 0});
+    return dest;
+}
+
+} // namespace
+
+TEST_CASE("reproject Mix 5/6 shared-plane dest split has mid-edge vertices", "[spectrum_paint_boundary]")
+{
+    Model        model;
+    ModelVolume *vol = add_painted_cube(model, {{0, 5}, {1, 6}});
+    const auto  &src  = vol->mmu_segmentation_facets.get_data();
+    const auto  &its  = vol->mesh().its;
+    REQUIRE(its.indices.size() > 1);
+
+    const indexed_triangle_set dest = dest_with_opposite_diagonal(its);
+    const TriangleSelector::TriangleSplittingData result = TriangleSelector::reproject_painting(
+        its, src, dest, Transform3d::Identity(), std::nullopt);
+
+    REQUIRE(result.used_states.size() > 6);
+    REQUIRE(result.used_states[5]);
+    REQUIRE(result.used_states[6]);
+    REQUIRE_FALSE(result.bitstream.empty());
+
+    TriangleMesh dest_mesh(dest);
+    TriangleSelector dest_sel(dest_mesh);
+    dest_sel.deserialize(result, false);
+    const auto f5 = dest_sel.get_facets(EnforcerBlockerType(5));
+    const auto f6 = dest_sel.get_facets(EnforcerBlockerType(6));
+    REQUIRE(its_has_vertex_absent_from(f5, dest));
+    REQUIRE(its_has_vertex_absent_from(f6, dest));
+
+    const Vec3i32 &o0 = its.indices[0];
+    const Vec3i32 &o1 = its.indices[1];
+    const Vec3f &a0 = its.vertices[o0(0)];
+    const Vec3f &b0 = its.vertices[o0(1)];
+    const Vec3f &c0 = its.vertices[o0(2)];
+    const Vec3f &a1 = its.vertices[o1(0)];
+    const Vec3f &b1 = its.vertices[o1(1)];
+    const Vec3f &c1 = its.vertices[o1(2)];
+    REQUIRE(its_contains_vertex_triple(f5, a0, b0, c0));
+    REQUIRE(its_contains_vertex_triple(f6, a1, b1, c1));
+}
+
+TEST_CASE("reproject uniform Mix 1 identity covers dest original faces", "[spectrum_paint_boundary]")
+{
+    Model        model;
+    ModelObject *obj = model.add_object("reproject_paint_cube", "", make_cube(20., 20., 20.));
+    REQUIRE(obj != nullptr);
+    obj->add_instance();
+    REQUIRE_FALSE(obj->volumes.empty());
+    ModelVolume *vol = obj->volumes.front();
+    TriangleSelector src_sel(vol->mesh());
+    const int n = int(vol->mesh().its.indices.size());
+    REQUIRE(n > 0);
+    for (int i = 0; i < n; ++i)
+        src_sel.set_facet(i, EnforcerBlockerType(1));
+    REQUIRE(vol->mmu_segmentation_facets.set(src_sel));
+
+    const auto &src = vol->mmu_segmentation_facets.get_data();
+    const auto &its = vol->mesh().its;
+    const TriangleSelector::TriangleSplittingData result = TriangleSelector::reproject_painting(
+        its, src, its, Transform3d::Identity(), std::nullopt);
+    REQUIRE_FALSE(result.bitstream.empty());
+
+    TriangleSelector dest_sel(vol->mesh());
+    dest_sel.deserialize(result, false);
+    REQUIRE(dest_sel.num_facets(EnforcerBlockerType(1)) == n);
+}
+
+TEST_CASE("reproject far translation does not flood Mix IDs", "[spectrum_paint_boundary]")
+{
+    Model        model;
+    ModelVolume *vol = add_painted_cube(model, {{0, 5}, {1, 6}});
+    const auto  &src  = vol->mmu_segmentation_facets.get_data();
+    const auto  &its  = vol->mesh().its;
+    const Transform3d xf = Geometry::translation_transform(Vec3d(1000., 0., 0.));
+
+    const TriangleSelector::TriangleSplittingData result = TriangleSelector::reproject_painting(
+        its, src, its, xf, std::nullopt);
+
+    REQUIRE(result.bitstream.empty());
+}
+
+TEST_CASE("reproject Cut-style ids leave caps NONE", "[spectrum_paint_boundary]")
+{
+    Model        model;
+    ModelVolume *vol = add_painted_cube(model, {{0, 5}, {1, 6}});
+    const auto  &src  = vol->mmu_segmentation_facets.get_data();
+    const auto  &its  = vol->mesh().its;
+
+    indexed_triangle_set dest = its;
+    dest.indices.push_back(its.indices[0]);
+    std::vector<int> ids(dest.indices.size(), -1);
+    ids[0] = 0;
+    ids[1] = 1;
+
+    const TriangleSelector::TriangleSplittingData result = TriangleSelector::reproject_painting(
+        its, src, dest, Transform3d::Identity(), std::nullopt, nullptr, &ids);
+    REQUIRE_FALSE(result.bitstream.empty());
+    REQUIRE(result.used_states.size() > 6);
+    REQUIRE(result.used_states[5]);
+    REQUIRE(result.used_states[6]);
+
+    TriangleMesh dest_mesh(dest);
+    TriangleSelector dest_sel(dest_mesh);
+    dest_sel.deserialize(result, false);
+    REQUIRE(dest_sel.num_facets(EnforcerBlockerType(5)) == 1);
+    REQUIRE(dest_sel.num_facets(EnforcerBlockerType(6)) == 1);
+}
+
+TEST_CASE("reproject already canceled returns empty", "[spectrum_paint_boundary]")
+{
+    Model        model;
+    ModelVolume *vol = add_fully_painted_sphere(model, 2. * PI / 90.);
+    const auto  &src = vol->mmu_segmentation_facets.get_data();
+    const auto  &its = vol->mesh().its;
+    std::atomic<bool> canceled{true};
+
+    const TriangleSelector::TriangleSplittingData result = TriangleSelector::reproject_painting(
+        its, src, its, Transform3d::Identity(), std::nullopt, &canceled);
+
+    REQUIRE(result.bitstream.empty());
+}
