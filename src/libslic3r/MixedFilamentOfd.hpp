@@ -20,15 +20,44 @@ struct SpectrumOfdVariant {
 };
 
 // Parse seed JSON object `{ "variants": [ ... ] }` OR a JSON array of variants OR OFD NDJSON
-// (one object per line). color_hex may be "#RRGGBB" string or array of those. Normalize to
-// uppercase #RRGGBB. Skip rows with no usable hex. Never throws.
+// (one object per line). OFD bulk (`_type` brand/filament/variant) is joined in one line-read:
+// variant.filament_id → filament {name, brand_id, material} → brand.name. Skip rows with no
+// usable hex or unresolved filament/brand ids. color_hex may be "#RRGGBB" string or array.
+// Normalize to uppercase #RRGGBB. Never throws.
 std::vector<SpectrumOfdVariant> spectrum_ofd_parse(const std::string &text);
 
-// Load seed file then overlay user NDJSON if present (user rows appended; lookup can match either).
-// Missing files → empty extra, not throw. Empty text → empty vector.
+// Load seed file then overlay user NDJSON if present. Dedup by case-insensitive
+// brand|filament|variant, keep first (seed wins). Missing files → empty extra, not throw.
 std::vector<SpectrumOfdVariant> spectrum_ofd_load_catalog(
     const std::string &seed_json_path,
     const std::string &user_ndjson_path = {});
+
+constexpr size_t SPECTRUM_OFD_RECENT_CAP = 10;
+
+// Case-insensitive `brand|filament|variant` (trimmed). Used for recents and catalog dedup.
+std::string spectrum_ofd_variant_key(const SpectrumOfdVariant &v);
+
+// Newest first. Same ci key moves to front. Size capped at `cap` (oldest dropped).
+void spectrum_ofd_recents_push(
+    std::vector<SpectrumOfdVariant> &recents,
+    const SpectrumOfdVariant        &applied,
+    size_t                           cap = SPECTRUM_OFD_RECENT_CAP);
+
+// JSON array of flat variant objects (same fields as seed rows). Bad JSON → empty, no throw.
+std::vector<SpectrumOfdVariant> spectrum_ofd_recents_parse(const std::string &text);
+std::string                     spectrum_ofd_recents_serialize(const std::vector<SpectrumOfdVariant> &recents);
+
+struct SpectrumOfdComposedList {
+    std::vector<SpectrumOfdVariant> matches;       // unique after recents-prepend + catalog lookup
+    size_t                          recent_prefix{0}; // leading rows that came from recents
+};
+
+// Recents that match the current brand/name filter, then catalog hits not already listed.
+SpectrumOfdComposedList spectrum_ofd_compose_list(
+    const std::vector<SpectrumOfdVariant> &recents,
+    const std::vector<SpectrumOfdVariant> &catalog,
+    const std::string                     &brand_filter,
+    const std::string                     &name_substring);
 
 // Case-insensitive contains. brand_filter empty = all brands. name_substring matches filament
 // and/or variant (and brand if no brand filter).

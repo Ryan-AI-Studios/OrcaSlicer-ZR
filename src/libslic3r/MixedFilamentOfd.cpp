@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <map>
 #include <sstream>
+#include <unordered_set>
 
 #include <boost/nowide/fstream.hpp>
 
@@ -146,6 +148,24 @@ bool parse_variant_object(const nlohmann::json &j, SpectrumOfdVariant &out)
     return true;
 }
 
+std::string json_id_field(const nlohmann::json &j, const char *key)
+{
+    if (!j.is_object() || !j.contains(key))
+        return {};
+    const nlohmann::json &v = j[key];
+    if (v.is_string())
+        return v.get<std::string>();
+    if (v.is_number_integer())
+        return std::to_string(v.get<long long>());
+    return {};
+}
+
+std::string variant_ci_key(const SpectrumOfdVariant &v)
+{
+    return ascii_lower(trim_copy(v.brand)) + "|" + ascii_lower(trim_copy(v.filament)) + "|" +
+           ascii_lower(trim_copy(v.variant));
+}
+
 void append_from_json(const nlohmann::json &j, std::vector<SpectrumOfdVariant> &out)
 {
     if (j.is_array()) {
@@ -179,7 +199,120 @@ std::string read_file_or_empty(const std::string &path)
     return ss.str();
 }
 
+struct OfdFilamentRow
+{
+    std::string name;
+    std::string brand_id;
+    std::string material;
+};
+
+bool emit_joined_variant(
+    const nlohmann::json                           &j,
+    const std::map<std::string, std::string>       &brands,
+    const std::map<std::string, OfdFilamentRow>    &filaments,
+    std::vector<SpectrumOfdVariant>                &out)
+{
+    SpectrumOfdVariant v;
+    if (!parse_variant_object(j, v))
+        return true; // no usable hex — skip, do not buffer
+    const std::string fid = json_id_field(j, "filament_id");
+    if (fid.empty())
+        return true;
+    auto fit = filaments.find(fid);
+    if (fit == filaments.end())
+        return false; // filament not yet seen — buffer
+    const OfdFilamentRow &f = fit->second;
+    auto bit = brands.find(f.brand_id);
+    if (bit == brands.end())
+        return false; // brand not yet seen — buffer
+    v.brand    = bit->second;
+    v.filament = f.name;
+    if (v.material.empty())
+        v.material = f.material;
+    out.push_back(std::move(v));
+    return true;
+}
+
+std::vector<SpectrumOfdVariant> parse_ofd_typed_ndjson(const std::string &text)
+{
+    std::vector<SpectrumOfdVariant>          out;
+    std::map<std::string, std::string>       brands;
+    std::map<std::string, OfdFilamentRow>    filaments;
+    std::vector<nlohmann::json>              buffered;
+
+    std::istringstream iss(text);
+    std::string        line;
+    while (std::getline(iss, line)) {
+        const std::string t = trim_copy(line);
+        if (t.empty())
+            continue;
+        nlohmann::json j = nlohmann::json::parse(t, nullptr, false);
+        if (j.is_discarded() || !j.is_object())
+            continue;
+        if (!j.contains("_type")) {
+            append_from_json(j, out);
+            continue;
+        }
+        const std::string type = ascii_lower(json_string_field(j, "_type"));
+        if (type == "brand") {
+            const std::string id = json_id_field(j, "id");
+            const std::string nm = json_string_field(j, "name");
+            if (!id.empty() && !nm.empty())
+                brands[id] = nm;
+        } else if (type == "filament") {
+            const std::string id = json_id_field(j, "id");
+            if (id.empty())
+                continue;
+            OfdFilamentRow row;
+            row.name     = json_string_field(j, "name");
+            row.brand_id = json_id_field(j, "brand_id");
+            row.material = json_string_field(j, "material");
+            filaments[id] = std::move(row);
+        } else if (type == "variant") {
+            if (!emit_joined_variant(j, brands, filaments, out))
+                buffered.push_back(std::move(j));
+        }
+    }
+    for (const nlohmann::json &j : buffered)
+        emit_joined_variant(j, brands, filaments, out);
+    return out;
+}
+
+// Detect OFD bulk without parsing JSON: the first non-empty line carries a `_type` key.
+// Typed join then parses each NDJSON line exactly once (Lock 2).
+bool first_line_has_type_key(const std::string &text)
+{
+    std::istringstream iss(text);
+    std::string        line;
+    while (std::getline(iss, line)) {
+        const std::string t = trim_copy(line);
+        if (t.empty())
+            continue;
+        return t.find("\"_type\"") != std::string::npos;
+    }
+    return false;
+}
+
+void catalog_append_keep_first(
+    std::vector<SpectrumOfdVariant>       &out,
+    const std::vector<SpectrumOfdVariant> &extra)
+{
+    std::unordered_set<std::string> seen;
+    seen.reserve(out.size() + extra.size());
+    for (const SpectrumOfdVariant &v : out)
+        seen.insert(variant_ci_key(v));
+    for (const SpectrumOfdVariant &v : extra) {
+        if (seen.insert(variant_ci_key(v)).second)
+            out.push_back(v);
+    }
+}
+
 } // namespace
+
+std::string spectrum_ofd_variant_key(const SpectrumOfdVariant &v)
+{
+    return variant_ci_key(v);
+}
 
 std::vector<SpectrumOfdVariant> spectrum_ofd_parse(const std::string &text)
 {
@@ -187,6 +320,9 @@ std::vector<SpectrumOfdVariant> spectrum_ofd_parse(const std::string &text)
     const std::string trimmed = trim_copy(text);
     if (trimmed.empty())
         return out;
+
+    if (first_line_has_type_key(text))
+        return parse_ofd_typed_ndjson(text);
 
     try {
         nlohmann::json j = nlohmann::json::parse(trimmed, nullptr, false);
@@ -223,9 +359,89 @@ std::vector<SpectrumOfdVariant> spectrum_ofd_load_catalog(
     std::vector<SpectrumOfdVariant> out = spectrum_ofd_parse(read_file_or_empty(seed_json_path));
     if (!user_ndjson_path.empty()) {
         const auto extra = spectrum_ofd_parse(read_file_or_empty(user_ndjson_path));
-        out.insert(out.end(), extra.begin(), extra.end());
+        catalog_append_keep_first(out, extra);
     }
     return out;
+}
+
+void spectrum_ofd_recents_push(
+    std::vector<SpectrumOfdVariant> &recents,
+    const SpectrumOfdVariant        &applied,
+    size_t                           cap)
+{
+    if (cap == 0) {
+        recents.clear();
+        return;
+    }
+    const std::string key = variant_ci_key(applied);
+    recents.erase(
+        std::remove_if(recents.begin(), recents.end(),
+                       [&](const SpectrumOfdVariant &v) { return variant_ci_key(v) == key; }),
+        recents.end());
+    recents.insert(recents.begin(), applied);
+    if (recents.size() > cap)
+        recents.resize(cap);
+}
+
+std::vector<SpectrumOfdVariant> spectrum_ofd_recents_parse(const std::string &text)
+{
+    std::vector<SpectrumOfdVariant> out;
+    const std::string trimmed = trim_copy(text);
+    if (trimmed.empty())
+        return out;
+    try {
+        nlohmann::json j = nlohmann::json::parse(trimmed, nullptr, false);
+        if (j.is_discarded())
+            return out;
+        append_from_json(j, out);
+    } catch (...) {
+        out.clear();
+    }
+    return out;
+}
+
+std::string spectrum_ofd_recents_serialize(const std::vector<SpectrumOfdVariant> &recents)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const SpectrumOfdVariant &v : recents) {
+        nlohmann::json o = nlohmann::json::object();
+        o["brand"]    = v.brand;
+        o["filament"] = v.filament;
+        o["variant"]  = v.variant;
+        if (!v.material.empty())
+            o["material"] = v.material;
+        if (v.color_hexes.size() == 1)
+            o["color_hex"] = v.color_hexes.front();
+        else
+            o["color_hex"] = v.color_hexes;
+        if (v.translucent)
+            o["translucent"] = true;
+        if (v.transparent)
+            o["transparent"] = true;
+        arr.push_back(std::move(o));
+    }
+    return arr.dump();
+}
+
+SpectrumOfdComposedList spectrum_ofd_compose_list(
+    const std::vector<SpectrumOfdVariant> &recents,
+    const std::vector<SpectrumOfdVariant> &catalog,
+    const std::string                     &brand_filter,
+    const std::string                     &name_substring)
+{
+    SpectrumOfdComposedList view;
+    view.matches = spectrum_ofd_lookup(recents, brand_filter, name_substring);
+    view.recent_prefix = view.matches.size();
+    std::unordered_set<std::string> seen;
+    seen.reserve(view.matches.size());
+    for (const SpectrumOfdVariant &v : view.matches)
+        seen.insert(variant_ci_key(v));
+    const auto cat = spectrum_ofd_lookup(catalog, brand_filter, name_substring);
+    for (const SpectrumOfdVariant &v : cat) {
+        if (seen.insert(variant_ci_key(v)).second)
+            view.matches.push_back(v);
+    }
+    return view;
 }
 
 std::vector<SpectrumOfdVariant> spectrum_ofd_lookup(

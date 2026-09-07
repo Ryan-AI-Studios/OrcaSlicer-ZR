@@ -31,6 +31,8 @@ protected:
 
 private:
     void load_catalog();
+    void load_recents();
+    void save_recents() const;
     void rebuild_brand_filter();
     void refresh_list();
     void select_row(int idx);
@@ -39,11 +41,13 @@ private:
     void update_title();
     std::string seed_path() const;
     std::string user_ndjson_path() const;
+    std::string recents_path() const;
 
     int                                 m_filament_idx{0};
     int                                 m_sel{-1};
     SpectrumOfdVariant                  m_selected;
     std::vector<SpectrumOfdVariant>     m_catalog;
+    std::vector<SpectrumOfdVariant>     m_recents;
     std::vector<SpectrumOfdVariant>     m_shown;
     std::shared_ptr<bool>               m_refresh_alive;
 

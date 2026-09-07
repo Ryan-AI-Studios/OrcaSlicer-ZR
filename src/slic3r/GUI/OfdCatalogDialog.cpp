@@ -20,10 +20,12 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/scrolwin.h>
+#include <wx/wupdlock.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <set>
+#include <sstream>
 
 #include <boost/filesystem.hpp>
 #include <boost/nowide/fstream.hpp>
@@ -186,6 +188,7 @@ OfdCatalogDialog::OfdCatalogDialog(wxWindow *parent, int filament_idx)
     m_name->Bind(wxEVT_TEXT, [this](wxCommandEvent &) { refresh_list(); });
 
     load_catalog();
+    load_recents();
     rebuild_brand_filter();
     refresh_list();
     update_title();
@@ -226,9 +229,41 @@ std::string OfdCatalogDialog::user_ndjson_path() const
     return (boost::filesystem::path(root) / "spectrum" / "ofd_all.ndjson").string();
 }
 
+std::string OfdCatalogDialog::recents_path() const
+{
+    const std::string &root = data_dir();
+    if (root.empty())
+        return {};
+    return (boost::filesystem::path(root) / "spectrum" / "ofd_recents.json").string();
+}
+
 void OfdCatalogDialog::load_catalog()
 {
     m_catalog = spectrum_ofd_load_catalog(seed_path(), user_ndjson_path());
+}
+
+void OfdCatalogDialog::load_recents()
+{
+    m_recents = spectrum_ofd_recents_parse(
+        [&]() {
+            const std::string path = recents_path();
+            if (path.empty())
+                return std::string();
+            boost::nowide::ifstream ifs(path, std::ios::binary);
+            if (!ifs)
+                return std::string();
+            std::ostringstream ss;
+            ss << ifs.rdbuf();
+            return ss.str();
+        }());
+}
+
+void OfdCatalogDialog::save_recents() const
+{
+    const std::string path = recents_path();
+    if (path.empty())
+        return;
+    write_ndjson_file(path, spectrum_ofd_recents_serialize(m_recents));
 }
 
 void OfdCatalogDialog::rebuild_brand_filter()
@@ -239,10 +274,14 @@ void OfdCatalogDialog::rebuild_brand_filter()
     m_brand->Clear();
     m_brand->Append(_L("All"));
     std::set<std::string> brands;
-    for (const SpectrumOfdVariant &v : m_catalog) {
-        if (!v.brand.empty())
-            brands.insert(v.brand);
-    }
+    auto collect = [&](const std::vector<SpectrumOfdVariant> &rows) {
+        for (const SpectrumOfdVariant &v : rows) {
+            if (!v.brand.empty())
+                brands.insert(v.brand);
+        }
+    };
+    collect(m_catalog);
+    collect(m_recents);
     int sel = 0;
     int i   = 1;
     for (const std::string &b : brands) {
@@ -263,61 +302,73 @@ void OfdCatalogDialog::refresh_list()
     if (m_name)
         needle = m_name->GetValue().ToUTF8().data();
 
-    const auto matches = spectrum_ofd_lookup(m_catalog, brand_filter, needle);
+    const SpectrumOfdComposedList composed =
+        spectrum_ofd_compose_list(m_recents, m_catalog, brand_filter, needle);
     m_shown.clear();
-    const size_t nshow = std::min(matches.size(), size_t(k_list_cap));
-    m_shown.assign(matches.begin(), matches.begin() + static_cast<std::ptrdiff_t>(nshow));
+    const size_t nshow = std::min(composed.matches.size(), size_t(k_list_cap));
+    m_shown.assign(composed.matches.begin(),
+                   composed.matches.begin() + static_cast<std::ptrdiff_t>(nshow));
     m_sel = m_shown.empty() ? -1 : 0;
 
     wxSizer *sizer = m_list->GetSizer();
-    sizer->Clear(true);
-
     const wxColour sel_bg(232, 240, 254);
     const wxColour uns_bg(255, 255, 255);
     const int      row_h = FromDIP(28);
+    const size_t   recent_shown = std::min(composed.recent_prefix, m_shown.size());
 
-    for (size_t i = 0; i < m_shown.size(); ++i) {
-        const SpectrumOfdVariant &v = m_shown[i];
-        auto *row = new wxPanel(m_list, wxID_ANY);
-        row->SetBackgroundColour(int(i) == m_sel ? sel_bg : uns_bg);
-        auto *hs = new wxBoxSizer(wxHORIZONTAL);
-        auto *swatch = new OfdSwatchPanel(row, v.color_hexes, wxSize(FromDIP(28), FromDIP(16)));
-        auto *label  = new Label(row, wxString::FromUTF8(variant_label(v).c_str()));
-        hs->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(8));
-        hs->Add(label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-        if (v.color_hexes.size() > 1) {
-            auto *badge = new Label(row, _L("Dual-color"));
-            hs->Add(badge, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    {
+        wxWindowUpdateLocker lock(m_list);
+        sizer->Clear(true);
+
+        for (size_t i = 0; i < m_shown.size(); ++i) {
+            const SpectrumOfdVariant &v = m_shown[i];
+            auto *row = new wxPanel(m_list, wxID_ANY);
+            row->SetBackgroundColour(int(i) == m_sel ? sel_bg : uns_bg);
+            auto *hs = new wxBoxSizer(wxHORIZONTAL);
+            auto *swatch = new OfdSwatchPanel(row, v.color_hexes, wxSize(FromDIP(28), FromDIP(16)));
+            auto *label  = new Label(row, wxString::FromUTF8(variant_label(v).c_str()));
+            hs->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(8));
+            hs->Add(label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+            if (i < recent_shown) {
+                auto *recent = new Label(row, _L("Recent"));
+                hs->Add(recent, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+            }
+            if (v.color_hexes.size() > 1) {
+                auto *badge = new Label(row, _L("Dual-color"));
+                hs->Add(badge, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+            }
+            row->SetSizer(hs);
+            row->SetMinSize(wxSize(-1, row_h));
+
+            auto bind_sel = [this, i](wxWindow *w) {
+                w->Bind(wxEVT_LEFT_DOWN, [this, i](wxMouseEvent &evt) {
+                    select_row(int(i));
+                    evt.Skip();
+                });
+                w->Bind(wxEVT_LEFT_DCLICK, [this, i](wxMouseEvent &) {
+                    select_row(int(i));
+                    on_apply();
+                });
+            };
+            bind_sel(row);
+            bind_sel(swatch);
+            bind_sel(label);
+            sizer->Add(row, 0, wxEXPAND);
         }
-        row->SetSizer(hs);
-        row->SetMinSize(wxSize(-1, row_h));
 
-        auto bind_sel = [this, i](wxWindow *w) {
-            w->Bind(wxEVT_LEFT_DOWN, [this, i](wxMouseEvent &evt) {
-                select_row(int(i));
-                evt.Skip();
-            });
-            w->Bind(wxEVT_LEFT_DCLICK, [this, i](wxMouseEvent &) {
-                select_row(int(i));
-                on_apply();
-            });
-        };
-        bind_sel(row);
-        bind_sel(swatch);
-        bind_sel(label);
-        sizer->Add(row, 0, wxEXPAND);
+        m_list->SetVirtualSize(wxSize(-1, int(m_shown.size()) * row_h));
+        m_list->FitInside();
     }
 
-    if (matches.size() > m_shown.size()) {
+    if (composed.matches.size() > m_shown.size()) {
         m_status->SetLabel(wxString::Format(_L("Showing %d of %d. Type a name to narrow."),
-                                            int(m_shown.size()), int(matches.size())));
+                                            int(m_shown.size()), int(composed.matches.size())));
     } else if (m_shown.empty()) {
         m_status->SetLabel(_L("No matching filaments in the catalog."));
     } else {
         m_status->SetLabel(wxString::Format(_L("%d filaments"), int(m_shown.size())));
     }
 
-    m_list->FitInside();
     m_list->Layout();
     Layout();
 }
@@ -345,6 +396,8 @@ void OfdCatalogDialog::on_apply()
     if (m_sel < 0 || size_t(m_sel) >= m_shown.size())
         return;
     m_selected = m_shown[size_t(m_sel)];
+    spectrum_ofd_recents_push(m_recents, m_selected);
+    save_recents();
     EndModal(wxID_OK);
 }
 

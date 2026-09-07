@@ -4,6 +4,9 @@
 #include "libslic3r/MixedFilamentCookbook.hpp"
 #include "libslic3r/MixedFilamentOfd.hpp"
 
+#include <boost/filesystem.hpp>
+#include <boost/nowide/fstream.hpp>
+
 #include <string>
 #include <vector>
 
@@ -223,4 +226,133 @@ TEST_CASE("ofd lookup from parse string with no network", "[spectrum_ofd]")
     CHECK(spectrum_mix_seed_mode_from_string("") == SpectrumMixSeedMode::Ask);
     CHECK(spectrum_mix_seed_mode_from_string("ALWAYS") == SpectrumMixSeedMode::Always);
     CHECK(spectrum_mix_seed_mode_from_string("never") == SpectrumMixSeedMode::Never);
+}
+
+namespace {
+
+const char *k_ofd_join = R"NDJSON(
+{"_type":"brand","id":"b-123","name":"123-3D"}
+{"_type":"brand","id":"b-sunlu","name":"Sunlu"}
+{"_type":"filament","id":"f-pla","name":"123-3D Filament PLA","brand_id":"b-123","material":"PLA"}
+{"_type":"filament","id":"f-orphan-brand","name":"Ghost PLA","brand_id":"no-such-brand","material":"PLA"}
+{"_type":"filament","id":"f-trans","name":"Translucent PLA","brand_id":"b-123","material":"PLA"}
+{"_type":"variant","name":"Black","color_hex":"#000000","filament_id":"f-pla"}
+{"_type":"variant","name":"OrphanFil","color_hex":"#111111","filament_id":"no-such-filament"}
+{"_type":"variant","name":"OrphanBrand","color_hex":"#222222","filament_id":"f-orphan-brand"}
+{"_type":"variant","name":"Clear","color_hex":"#EEEEEE","filament_id":"f-trans","traits":{"translucent":true}}
+{"_type":"variant","name":"Early","color_hex":"#ABCDEF","filament_id":"f-late"}
+{"_type":"filament","id":"f-late","name":"Late Filament","brand_id":"b-123","material":"PLA"}
+{"_type":"meta","version":"test"}
+)NDJSON";
+
+SpectrumOfdVariant make_spool(const std::string &brand,
+                              const std::string &filament,
+                              const std::string &variant,
+                              const std::string &hex)
+{
+    SpectrumOfdVariant v;
+    v.brand       = brand;
+    v.filament    = filament;
+    v.variant     = variant;
+    v.color_hexes = {hex};
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("ofd relational ndjson join brand filament and skip orphans", "[spectrum_ofd]")
+{
+    const auto catalog = spectrum_ofd_parse(k_ofd_join);
+    const auto black   = spectrum_ofd_lookup(catalog, "123-3D", "black");
+    REQUIRE(black.size() == 1);
+    CHECK(black[0].brand == "123-3D");
+    CHECK(black[0].filament == "123-3D Filament PLA");
+    CHECK(black[0].variant == "Black");
+    CHECK(spectrum_ofd_slot_hex(black[0]) == "#000000");
+
+    CHECK(spectrum_ofd_lookup(catalog, "", "OrphanFil").empty());
+    CHECK(spectrum_ofd_lookup(catalog, "", "OrphanBrand").empty());
+
+    const auto clear = spectrum_ofd_lookup(catalog, "123-3D", "clear");
+    REQUIRE(clear.size() == 1);
+    CHECK(clear[0].translucent);
+    CHECK(clear[0].filament == "Translucent PLA");
+
+    const auto early = spectrum_ofd_lookup(catalog, "123-3D", "early");
+    REQUIRE(early.size() == 1);
+    CHECK(early[0].filament == "Late Filament");
+    CHECK(spectrum_ofd_slot_hex(early[0]) == "#ABCDEF");
+
+    CHECK(spectrum_ofd_lookup(catalog, "Sunlu", "").empty());
+}
+
+TEST_CASE("ofd load_catalog keep-first seed wins identical key", "[spectrum_ofd]")
+{
+    const auto dir = boost::filesystem::temp_directory_path() / "zr_ofd_0063";
+    boost::system::error_code ec;
+    boost::filesystem::create_directories(dir, ec);
+    const auto seed_path = (dir / "ofd_seed.json").string();
+    const auto user_path = (dir / "ofd_all.ndjson").string();
+
+    {
+        boost::nowide::ofstream seed(seed_path, std::ios::binary | std::ios::trunc);
+        seed << R"JSON({"variants":[{"brand":"Panchroma","filament":"PLA","variant":"Cyan","color_hex":"#00FFFF"}]})JSON";
+    }
+    {
+        boost::nowide::ofstream user(user_path, std::ios::binary | std::ios::trunc);
+        user << R"JSON({"brand":"panchroma","filament":"pla","variant":"cyan","color_hex":"#112233"})JSON" << "\n";
+        user << R"JSON({"brand":"Sunlu","filament":"PLA","variant":"Black","color_hex":"#000000"})JSON" << "\n";
+    }
+
+    const auto catalog = spectrum_ofd_load_catalog(seed_path, user_path);
+    REQUIRE(catalog.size() == 2);
+    CHECK(catalog[0].variant == "Cyan");
+    CHECK(spectrum_ofd_slot_hex(catalog[0]) == "#00FFFF");
+    CHECK(catalog[1].brand == "Sunlu");
+}
+
+TEST_CASE("ofd recents mru cap dedup and filtered compose", "[spectrum_ofd]")
+{
+    std::vector<SpectrumOfdVariant> recents;
+    for (int i = 0; i < 11; ++i)
+        spectrum_ofd_recents_push(recents, make_spool("Brand", "PLA", "V" + std::to_string(i), "#00000" + std::to_string(i % 10)));
+    REQUIRE(recents.size() == 10);
+    CHECK(recents.front().variant == "V10");
+    CHECK(recents.back().variant == "V1");
+    for (const auto &v : recents)
+        CHECK(v.variant != "V0");
+
+    spectrum_ofd_recents_push(recents, make_spool("brand", "pla", "v5", "#ABCDEF"));
+    REQUIRE(recents.size() == 10);
+    CHECK(recents.front().variant == "v5");
+    CHECK(spectrum_ofd_slot_hex(recents.front()) == "#ABCDEF");
+
+    CHECK(spectrum_ofd_recents_parse("{not json").empty());
+    CHECK(spectrum_ofd_recents_parse("").empty());
+    const std::string dumped = spectrum_ofd_recents_serialize({recents.front()});
+    const auto        round  = spectrum_ofd_recents_parse(dumped);
+    REQUIRE(round.size() == 1);
+    CHECK(spectrum_ofd_variant_key(round[0]) == spectrum_ofd_variant_key(recents.front()));
+
+    const auto sunlu     = make_spool("Sunlu", "PLA", "Red", "#FF0000");
+    const auto panchroma = make_spool("Panchroma", "Matte PLA", "Ash Grey", "#808080");
+    const auto catalog_z = make_spool("Panchroma", "Matte PLA", "Sky Blue", "#1AC5FC");
+    std::vector<SpectrumOfdVariant> rec{sunlu, panchroma};
+    std::vector<SpectrumOfdVariant> cat{catalog_z};
+
+    const auto empty_filter = spectrum_ofd_compose_list(rec, cat, "", "");
+    REQUIRE(empty_filter.matches.size() == 3);
+    REQUIRE(empty_filter.recent_prefix == 2);
+    CHECK(empty_filter.matches[0].brand == "Sunlu");
+    CHECK(empty_filter.matches[1].brand == "Panchroma");
+    CHECK(empty_filter.matches[2].variant == "Sky Blue");
+
+    const auto pan_only = spectrum_ofd_compose_list(rec, cat, "Panchroma", "");
+    REQUIRE(pan_only.matches.size() == 2);
+    REQUIRE(pan_only.recent_prefix == 1);
+    CHECK(pan_only.matches[0].variant == "Ash Grey");
+    CHECK(pan_only.matches[0].brand == "Panchroma");
+    CHECK(pan_only.matches[1].variant == "Sky Blue");
+    for (const auto &v : pan_only.matches)
+        CHECK(v.brand != "Sunlu");
 }
