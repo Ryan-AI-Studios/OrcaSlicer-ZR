@@ -2,7 +2,11 @@
 
 A **Windows** fork of [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) for the **WonderMaker ZR Ultra S** (a 4-head toolchanger).
 
-**[Download the Windows app](https://github.com/Ryan-AI-Studios/OrcaSlicer-ZR/releases/latest)** — unzip the folder and run `orca-slicer.exe`.
+**[Download the Windows app](https://github.com/Ryan-AI-Studios/OrcaSlicer-ZR/releases/latest)** — installer (`.exe`) or portable zip.
+
+```bat
+winget install --id RyanAIStudios.ZRSpectrum -e
+```
 
 This is **not** official OrcaSlicer. Do not use the OrcaSlicer.com / SoftFever installers if you want the mix features below.
 
@@ -23,9 +27,14 @@ Windows only for now. This is a **toolchanger mix** workflow, not Bambu AMS.
 ## Run it (Windows)
 
 1. Open the **[latest Release](https://github.com/Ryan-AI-Studios/OrcaSlicer-ZR/releases/latest)**
-2. Download the `.zip` and unzip it
-3. Open the `OrcaSlicer` folder and double-click **`orca-slicer.exe`**
-4. Choose printer **WonderMaker ZR Ultra S**
+2. Run **`ZRSpectrum_Windows_Installer_*.exe`**, or unzip the portable zip and run `OrcaSlicer\orca-slicer.exe`
+3. Choose printer **WonderMaker ZR Ultra S**
+
+Or, once Microsoft publishes the listing:
+
+```bat
+winget install --id RyanAIStudios.ZRSpectrum -e
+```
 
 If Windows blocks it, or the window will not open, install [WebView2](https://go.microsoft.com/fwlink/p/?LinkId=2124703) and the [Visual C++ redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 

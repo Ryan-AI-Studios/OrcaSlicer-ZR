@@ -6,9 +6,16 @@ jobs:
   publish:
     runs-on: windows-latest
     steps:
+      - name: WinGet package version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $t = "${{ github.event.release.tag_name }}"
+          $v = $t -replace '^zr-','' -replace '^v',''
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - uses: vedantmgoyal9/winget-releaser@main
         with:
-          identifier: SoftFever.OrcaSlicer
-          version: ${{ github.event.release.tag_name }}
+          identifier: RyanAIStudios.ZRSpectrum
+          version: ${{ steps.ver.outputs.version }}
           token: ${{ secrets.WINGET_TOKEN }}
-          installers-regex: '\.exe$'
+          installers-regex: 'ZRSpectrum_Windows_Installer.*\.exe$'
