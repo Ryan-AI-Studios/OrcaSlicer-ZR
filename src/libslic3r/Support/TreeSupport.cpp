@@ -1356,7 +1356,12 @@ void TreeSupport::generate_toolpaths()
 {
     const PrintObjectConfig &object_config = m_object->config();
     coordf_t support_extrusion_width = m_support_params.support_extrusion_width;
-    coordf_t nozzle_diameter = m_print_config->nozzle_diameter.get_at(object_config.support_filament - 1);
+    coordf_t nozzle_diameter = spectrum_nozzle_mm_for_physical(
+        m_print_config->nozzle_diameter.values,
+        spectrum_physical_for_filament(
+            unsigned(std::max(0, int(object_config.support_filament))),
+            m_print_config->filament_diameter.size(),
+            m_print_config->mixed_filament_definitions.value));
     coordf_t layer_height = object_config.layer_height.value;
     const size_t wall_count = object_config.tree_support_wall_count.value;
 

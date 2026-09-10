@@ -280,7 +280,13 @@ void PrintObject::_transform_hole_to_polyholes()
     }
     //create a polyhole per id and replace holes points by it.
     for (auto entry : id2layerz2hole) {
-        Polygons polyholes = create_polyholes(std::get<0>(entry.first), std::get<1>(entry.first), scale_(print()->config().nozzle_diameter.get_at(std::get<2>(entry.first) - 1)), std::get<4>(entry.first));
+        const unsigned int hole_phys = spectrum_physical_for_filament(
+            unsigned(std::max(0, std::get<2>(entry.first))),
+            print()->config().filament_diameter.size(),
+            &print()->mixed_filament_manager());
+        Polygons polyholes = create_polyholes(std::get<0>(entry.first), std::get<1>(entry.first),
+            scale_(spectrum_nozzle_mm_for_physical(print()->config().nozzle_diameter.values, hole_phys)),
+            std::get<4>(entry.first));
         for (auto& poly_to_replace : entry.second) {
             Polygon polyhole = polyholes[poly_to_replace.second % polyholes.size()];
             //search the clone in layers->slices
@@ -3809,7 +3815,8 @@ std::vector<unsigned int> PrintObject::object_extruders() const
         std::vector<int> volume_extruders = mv->get_extruders();
         for (int extruder : volume_extruders) {
             assert(extruder > 0);
-            extruders.push_back(extruder - 1);
+            this->print()->mixed_filament_manager().append_physical_0based(
+                unsigned(extruder), this->print()->config().filament_diameter.size(), extruders);
         }
     }
     sort_remove_duplicates(extruders);
@@ -4195,9 +4202,16 @@ void PrintObject::combine_infill()
 
         // Limit the number of combined layers to the maximum height allowed by this regions' nozzle.
         //FIXME limit the layer height to max_layer_height
+        const size_t np = this->print()->config().filament_diameter.size();
+        const unsigned int sparse_phys = spectrum_physical_for_filament(
+            unsigned(std::max(0, region.config().sparse_infill_filament_id.value)), np,
+            &this->print()->mixed_filament_manager());
+        const unsigned int solid_phys = spectrum_physical_for_filament(
+            unsigned(std::max(0, region.config().internal_solid_filament_id.value)), np,
+            &this->print()->mixed_filament_manager());
         double nozzle_diameter = std::min(
-            this->print()->config().nozzle_diameter.get_at(region.config().sparse_infill_filament_id.value - 1),
-            this->print()->config().nozzle_diameter.get_at(region.config().internal_solid_filament_id.value - 1));
+            double(spectrum_nozzle_mm_for_physical(this->print()->config().nozzle_diameter.values, sparse_phys)),
+            double(spectrum_nozzle_mm_for_physical(this->print()->config().nozzle_diameter.values, solid_phys)));
         
         //Orca: Limit combination of infill to up to infill_combination_max_layer_height
         const double infill_combination_max_layer_height = region.config().infill_combination_max_layer_height.get_abs_value(nozzle_diameter);

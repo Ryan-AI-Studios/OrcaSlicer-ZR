@@ -462,8 +462,8 @@ std::vector<unsigned int> Print::object_extruders() const
     const size_t num_physical = m_config.filament_diameter.size();
 
     //Orca: Collect extruders from all regions.
-    // collect_object_printing_extruders clamps unknown virtual IDs; re-expand
-    // from region config so mixed components appear as physical tools.
+    // collect_object_printing_extruders now expands Mix IDs; re-expand
+    // from region config so mixed components appear as physical tools (idempotent).
     for (const PrintObject *object : m_objects)
 		for (const PrintRegion &region : object->all_regions()) {
         	region.collect_object_printing_extruders(*this, extruders);
@@ -527,15 +527,15 @@ std::vector<unsigned int> Print::support_material_extruders() const
             if (object->config().support_filament == 0)
                 support_uses_current_extruder = true;
             else {
-            	unsigned int i = (unsigned int)object->config().support_filament - 1;
-                extruders.emplace_back((i >= num_extruders) ? 0 : i);
+                m_mixed_filament_mgr.append_physical_0based(
+                    unsigned(object->config().support_filament), num_extruders, extruders);
             }
         	assert(object->config().support_interface_filament >= 0);
             if (object->config().support_interface_filament == 0)
                 support_uses_current_extruder = true;
             else {
-            	unsigned int i = (unsigned int)object->config().support_interface_filament - 1;
-                extruders.emplace_back((i >= num_extruders) ? 0 : i);
+                m_mixed_filament_mgr.append_physical_0based(
+                    unsigned(object->config().support_interface_filament), num_extruders, extruders);
             }
         }
     }
@@ -1198,11 +1198,21 @@ StringObjectException Print::check_multi_filament_valid(const Print& print)
             if (print_object->has_support_material()) { // extruder used by supports
                 auto num_extruders                 = (unsigned int) print_config.filament_diameter.size();
                 assert(print_object->config().support_filament >= 0);
-                if (print_object->config().support_filament >= 1 && (unsigned int)print_object->config().support_filament < num_extruders + 1)
-                    obj_used_extruder_ids.insert((unsigned int) print_object->config().support_filament - 1);//0-based extruder id
+                if (print_object->config().support_filament >= 1) {
+                    std::vector<unsigned int> support_phys;
+                    print.mixed_filament_manager().append_physical_0based(
+                        unsigned(print_object->config().support_filament), num_extruders, support_phys);
+                    for (unsigned int z : support_phys)
+                        obj_used_extruder_ids.insert(int(z));
+                }
                 assert(print_object->config().support_interface_filament >= 0);
-                if (print_object->config().support_interface_filament >= 1 && (unsigned int)print_object->config().support_interface_filament < num_extruders + 1)
-                    obj_used_extruder_ids.insert((unsigned int) print_object->config().support_interface_filament - 1);
+                if (print_object->config().support_interface_filament >= 1) {
+                    std::vector<unsigned int> interface_phys;
+                    print.mixed_filament_manager().append_physical_0based(
+                        unsigned(print_object->config().support_interface_filament), num_extruders, interface_phys);
+                    for (unsigned int z : interface_phys)
+                        obj_used_extruder_ids.insert(int(z));
+                }
             }
             std::vector<std::string> filament_types;
             std::vector<int> nozzle_temperatures;
@@ -1669,12 +1679,15 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             double first_layer_min_nozzle_diameter;
             if (object->has_raft()) {
                 // if we have raft layers, only support material extruder is used on first layer
-                size_t first_layer_extruder = object->config().raft_layers == 1
-                    ? object->config().support_interface_filament-1
-                    : object->config().support_filament-1;
-                first_layer_min_nozzle_diameter = (first_layer_extruder == size_t(-1)) ?
+                const int first_filament = object->config().raft_layers == 1
+                    ? object->config().support_interface_filament
+                    : object->config().support_filament;
+                const unsigned int first_phys = spectrum_physical_for_filament(
+                    unsigned(std::max(0, first_filament)),
+                    m_config.filament_diameter.size(), &m_mixed_filament_mgr);
+                first_layer_min_nozzle_diameter = (first_phys == 0) ?
                     min_nozzle_diameter :
-                    m_config.nozzle_diameter.get_at(first_layer_extruder);
+                    spectrum_nozzle_mm_for_physical(m_config.nozzle_diameter.values, first_phys);
             } else {
                 // if we don't have raft layers, any nozzle diameter is potentially used in first layer
                 first_layer_min_nozzle_diameter = min_nozzle_diameter;
@@ -1704,7 +1717,9 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             for (const PrintRegion &region : object->all_regions()) {
                 const auto &bridge_width_opt = region.config().bridge_line_width;
                 for (FlowRole bridge_role : { frPerimeter, frInfill, frSolidInfill, frTopSolidInfill }) {
-                    const double nozzle_diameter = m_config.nozzle_diameter.get_at(region.extruder(bridge_role) - 1);
+                    const unsigned int bridge_phys = spectrum_physical_for_filament(
+                        region.extruder(bridge_role), m_config.filament_diameter.size(), &m_mixed_filament_mgr);
+                    const double nozzle_diameter = spectrum_nozzle_mm_for_physical(m_config.nozzle_diameter.values, bridge_phys);
                     const double bridge_width    = bridge_width_opt.get_abs_value(nozzle_diameter);
                     if (bridge_width <= 0.)
                         continue;
@@ -2050,7 +2065,11 @@ Flow Print::brim_flow() const
         frPerimeter,
         // Flow::new_from_config_width takes care of the percent to value substitution
 		width,
-        (float)m_config.nozzle_diameter.get_at(m_print_regions.front()->config().outer_wall_filament_id-1),
+        spectrum_nozzle_mm_for_physical(
+            m_config.nozzle_diameter.values,
+            spectrum_physical_for_filament(
+                unsigned(std::max(0, m_print_regions.front()->config().outer_wall_filament_id.value)),
+                m_config.filament_diameter.size(), &m_mixed_filament_mgr)),
 		(float)this->skirt_first_layer_height());
 }
 
@@ -2070,8 +2089,12 @@ Flow Print::skirt_flow() const
     return Flow::new_from_config_width(frPerimeter,
                                        // Flow::new_from_config_width takes care of the percent to value substitution
                                        width,
-                                       (float) m_config.nozzle_diameter.get_at(
-                                           m_objects.empty() ? 0 : m_objects.front()->config().support_filament - 1),
+                                       spectrum_nozzle_mm_for_physical(
+                                           m_config.nozzle_diameter.values,
+                                           spectrum_physical_for_filament(
+                                               m_objects.empty() ? 0u :
+                                                   unsigned(std::max(0, int(m_objects.front()->config().support_filament))),
+                                               m_config.filament_diameter.size(), &m_mixed_filament_mgr)),
                                        (float) this->skirt_first_layer_height());
 }
 

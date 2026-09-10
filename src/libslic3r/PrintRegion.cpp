@@ -1,6 +1,8 @@
 #include "Exception.hpp"
 #include "Print.hpp"
 
+#include <algorithm>
+
 namespace Slic3r {
 
 // 1-based extruder identifier for this region and role.
@@ -47,20 +49,28 @@ Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_he
     if (config_width.value == 0)
         config_width = object.config().line_width;
     
-    // Get the configured nozzle_diameter for the extruder associated to the flow role requested.
-    // Here this->extruder(role) - 1 may underflow to MAX_INT, but then the get_at() will follback to zero'th element, so everything is all right.
-    auto nozzle_diameter = float(print_config.nozzle_diameter.get_at(this->extruder(role) - 1));
+    // Mix IDs are virtual — map to component_a, then 0030 get_at-equivalent nozzle lookup.
+    const size_t       np   = print_config.filament_diameter.size();
+    const unsigned int phys = spectrum_physical_for_filament(
+        this->extruder(role), np, &object.print()->mixed_filament_manager());
+    auto nozzle_diameter = spectrum_nozzle_mm_for_physical(print_config.nozzle_diameter.values, phys);
     return Flow::new_from_config_width(role, config_width, nozzle_diameter, float(layer_height));
 }
 
 coordf_t PrintRegion::nozzle_dmr_avg(const PrintConfig &print_config) const
 {
-    return (print_config.nozzle_diameter.get_at(m_config.outer_wall_filament_id.value    - 1) +
-            print_config.nozzle_diameter.get_at(m_config.inner_wall_filament_id.value    - 1) +
-            print_config.nozzle_diameter.get_at(m_config.sparse_infill_filament_id.value       - 1) +
-            print_config.nozzle_diameter.get_at(m_config.internal_solid_filament_id.value - 1) +
-            print_config.nozzle_diameter.get_at(m_config.top_surface_filament_id.value    - 1) +
-            print_config.nozzle_diameter.get_at(m_config.bottom_surface_filament_id.value - 1)) / 6.;
+    const size_t      np   = print_config.filament_diameter.size();
+    const std::string &defs = print_config.mixed_filament_definitions.value;
+    auto dmr = [&](int filament_id_1based) {
+        const unsigned int phys = spectrum_physical_for_filament(unsigned(std::max(0, filament_id_1based)), np, defs);
+        return double(spectrum_nozzle_mm_for_physical(print_config.nozzle_diameter.values, phys));
+    };
+    return (dmr(m_config.outer_wall_filament_id.value) +
+            dmr(m_config.inner_wall_filament_id.value) +
+            dmr(m_config.sparse_infill_filament_id.value) +
+            dmr(m_config.internal_solid_filament_id.value) +
+            dmr(m_config.top_surface_filament_id.value) +
+            dmr(m_config.bottom_surface_filament_id.value)) / 6.;
 }
 
 coordf_t PrintRegion::bridging_height_avg(const PrintConfig &print_config) const
@@ -71,11 +81,14 @@ coordf_t PrintRegion::bridging_height_avg(const PrintConfig &print_config) const
 void PrintRegion::collect_object_printing_extruders(const PrintConfig &print_config, const PrintRegionConfig &region_config, const bool has_brim, std::vector<unsigned int> &object_extruders)
 {
     // These checks reflect the same logic used in the GUI for enabling/disabling extruder selection fields.
-    // BBS
+    // Mix IDs expand to physical components; never clamp a virtual ID to Tool 0.
     auto num_extruders = (int)print_config.filament_diameter.size();
-    auto emplace_extruder = [num_extruders, &object_extruders](int extruder_id) {
-    	int i = std::max(0, extruder_id - 1);
-        object_extruders.emplace_back((i >= num_extruders) ? 0 : i);
+    MixedFilamentManager mgr;
+    mgr.load_definitions(print_config.mixed_filament_definitions.value);
+    auto emplace_extruder = [&](int extruder_id) {
+        if (extruder_id <= 0)
+            return;
+        mgr.append_physical_0based(unsigned(extruder_id), size_t(num_extruders), object_extruders);
     };
     if (region_config.wall_loops.value > 0 || has_brim) {
     	emplace_extruder(region_config.outer_wall_filament_id);

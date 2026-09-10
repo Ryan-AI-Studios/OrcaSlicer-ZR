@@ -1,6 +1,7 @@
 #include "Flow.hpp"
 #include "I18N.hpp"
 #include "Print.hpp"
+#include <algorithm>
 #include <cmath>
 #include <assert.h>
 
@@ -235,15 +236,23 @@ Flow support_material_flow(const PrintObject *object, float layer_height)
         frSupportMaterial,
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (object->config().support_line_width.value > 0) ? object->config().support_line_width : object->config().line_width,
-        // if object->config().support_filament == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
-        float(object->print()->config().nozzle_diameter.get_at(object->config().support_filament-1)),
+        // support_filament == 0 → helper 0 → 0030 unsigned-wrap front (current tool).
+        spectrum_nozzle_mm_for_physical(
+            object->print()->config().nozzle_diameter.values,
+            spectrum_physical_for_filament(unsigned(std::max(0, int(object->config().support_filament))),
+                                           object->print()->config().filament_diameter.size(),
+                                           &object->print()->mixed_filament_manager())),
         (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value));
 }
 //BBS
 Flow support_transition_flow(const PrintObject* object)
 {
     //BBS: support transition of tree support is bridge flow
-    float dmr = float(object->print()->config().nozzle_diameter.get_at(object->config().support_filament - 1));
+    float dmr = spectrum_nozzle_mm_for_physical(
+        object->print()->config().nozzle_diameter.values,
+        spectrum_physical_for_filament(unsigned(std::max(0, int(object->config().support_filament))),
+                                       object->print()->config().filament_diameter.size(),
+                                       &object->print()->mixed_filament_manager()));
     return Flow::bridging_flow(dmr, dmr);
 }
 
@@ -255,7 +264,11 @@ Flow support_material_1st_layer_flow(const PrintObject *object, float layer_heig
         frSupportMaterial,
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (width.value > 0) ? width : object->config().line_width,
-        float(print_config.nozzle_diameter.get_at(object->config().support_filament-1)),
+        spectrum_nozzle_mm_for_physical(
+            print_config.nozzle_diameter.values,
+            spectrum_physical_for_filament(unsigned(std::max(0, int(object->config().support_filament))),
+                                           print_config.filament_diameter.size(),
+                                           &object->print()->mixed_filament_manager())),
         (layer_height > 0.f) ? layer_height : float(print_config.initial_layer_print_height.value));
 }
 
@@ -265,8 +278,12 @@ Flow support_material_interface_flow(const PrintObject *object, float layer_heig
         frSupportMaterialInterface,
         // The width parameter accepted by new_from_config_width is of type ConfigOptionFloatOrPercent, the Flow class takes care of the percent to value substitution.
         (object->config().support_line_width > 0) ? object->config().support_line_width : object->config().line_width,
-        // if object->config().support_interface_filament == 0 (which means to not trigger tool change, but use the current extruder instead), get_at will return the 0th component.
-        float(object->print()->config().nozzle_diameter.get_at(object->config().support_interface_filament-1)),
+        // support_interface_filament == 0 → helper 0 → 0030 unsigned-wrap front (current tool).
+        spectrum_nozzle_mm_for_physical(
+            object->print()->config().nozzle_diameter.values,
+            spectrum_physical_for_filament(unsigned(std::max(0, int(object->config().support_interface_filament))),
+                                           object->print()->config().filament_diameter.size(),
+                                           &object->print()->mixed_filament_manager())),
         (layer_height > 0.f) ? layer_height : float(object->config().layer_height.value));
 }
 

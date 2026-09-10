@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <assert.h>
 #include <stdio.h>
 #include <memory>
@@ -992,7 +993,11 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 				//get locked region param
 				if (params.pattern == ipLockedZag){
 					const PrintObject *object = layerm.layer()->object();
-					auto nozzle_diameter = float(object->print()->config().nozzle_diameter.get_at(layerm.region().extruder(extrusion_role) - 1));
+					const unsigned int phys = spectrum_physical_for_filament(
+                        layerm.region().extruder(extrusion_role),
+                        object->print()->config().filament_diameter.size(),
+                        &object->print()->mixed_filament_manager());
+					auto nozzle_diameter = spectrum_nozzle_mm_for_physical(object->print()->config().nozzle_diameter.values, phys);
 					Flow skin_flow = params.bridge ? params.flow : Flow::new_from_config_width(extrusion_role, region_config.skin_infill_line_width, nozzle_diameter, float((surface.thickness == -1) ? layer.height : surface.thickness));
 					//add skin flow
 					append_flow_param(lock_param.skin_flow_params, skin_flow, surface.expolygon);
@@ -1589,7 +1594,11 @@ void Layer::make_ironing()
 				//TODO just_infill is currently not used.
 				ironing_params.just_infill 	= false;
 				// ORCA: Get filament-specific overrides if configured, otherwise use process values
-				size_t extruder_idx = ironing_params.extruder - 1;
+				const unsigned int ironing_phys = spectrum_physical_for_filament(
+                    unsigned(std::max(0, ironing_params.extruder)),
+                    this->object()->print()->config().filament_diameter.size(),
+                    &this->object()->print()->mixed_filament_manager());
+				size_t extruder_idx = (ironing_phys == 0) ? 0 : size_t(ironing_phys - 1);
 				ironing_params.line_spacing = (!config.filament_ironing_spacing.is_nil(extruder_idx)
 					? config.filament_ironing_spacing.get_at(extruder_idx)
 					: config.ironing_spacing);
@@ -1645,7 +1654,11 @@ void Layer::make_ironing()
 
 		// Create the ironing extrusions for regions <i, j)
 		ExPolygons ironing_areas;
-		double nozzle_dmr = this->object()->print()->config().nozzle_diameter.get_at(ironing_params.extruder - 1);
+		const unsigned int ironing_phys = spectrum_physical_for_filament(
+            unsigned(std::max(0, ironing_params.extruder)),
+            this->object()->print()->config().filament_diameter.size(),
+            &this->object()->print()->mixed_filament_manager());
+		double nozzle_dmr = spectrum_nozzle_mm_for_physical(this->object()->print()->config().nozzle_diameter.values, ironing_phys);
 		if (ironing_params.just_infill) {
 			//TODO just_infill is currently not used.
 			// Just infill.

@@ -1,9 +1,11 @@
 #ifndef slic3r_SupportParameters_hpp_
 #define slic3r_SupportParameters_hpp_
 
+#include <algorithm>
 #include <boost/log/trivial.hpp>
 #include "../libslic3r.h"
 #include "../Flow.hpp"
+#include "../MixedFilament.hpp"
 
 namespace Slic3r {
 
@@ -175,7 +177,12 @@ struct SupportParameters {
             assert(slicing_params.raft_layers() == 0);
         }
 
-	    const auto     nozzle_diameter = print_config.nozzle_diameter.get_at(object_config.support_interface_filament - 1);
+	    const auto     nozzle_diameter = spectrum_nozzle_mm_for_physical(
+            print_config.nozzle_diameter.values,
+            spectrum_physical_for_filament(
+                unsigned(std::max(0, int(object_config.support_interface_filament))),
+                print_config.filament_diameter.size(),
+                print_config.mixed_filament_definitions.value));
         const coordf_t extrusion_width = object_config.line_width.get_abs_value(nozzle_diameter);
         support_extrusion_width        = object_config.support_line_width.get_abs_value(nozzle_diameter);
         support_extrusion_width        = support_extrusion_width > 0 ? support_extrusion_width : extrusion_width;

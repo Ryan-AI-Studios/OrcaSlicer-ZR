@@ -665,11 +665,17 @@ static ExPolygons outer_inner_brim_area(const Print& print,
         });
 
         if (iter != objPrintVec.end()) {
-            int extruder_id = filament_map[iter->second - 1] - 1;
-            auto bedPoly = extruder_unprintable_area[extruder_id];
-            auto bedExPoly   = diff_ex((offset(bedPoly, scale_(30.), jtRound, SCALED_RESOLUTION)), {bedPoly});
-            if (!bedExPoly.empty()) {
-                extruder_no_brim_area.push_back(bedExPoly.front());
+            const unsigned int phys = spectrum_physical_for_filament(
+                iter->second, print.config().filament_diameter.size(), &print.mixed_filament_manager());
+            if (phys >= 1 && phys <= filament_map.size()) {
+                int extruder_id = filament_map[phys - 1] - 1;
+                if (extruder_id >= 0 && size_t(extruder_id) < extruder_unprintable_area.size()) {
+                    auto bedPoly = extruder_unprintable_area[extruder_id];
+                    auto bedExPoly   = diff_ex((offset(bedPoly, scale_(30.), jtRound, SCALED_RESOLUTION)), {bedPoly});
+                    if (!bedExPoly.empty()) {
+                        extruder_no_brim_area.push_back(bedExPoly.front());
+                    }
+                }
             }
             //extruder_no_brim_area = offset2_ex(extruder_no_brim_area, scaled_flow_width, -scaled_flow_width); // connect scattered small areas to prevent generating very small brims
 

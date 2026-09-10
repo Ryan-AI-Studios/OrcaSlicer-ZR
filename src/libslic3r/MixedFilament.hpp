@@ -105,6 +105,21 @@ float spectrum_perimeter_mod_magnitude_mm(float nozzle_mm);
 float spectrum_nozzle_mm_for_physical(const std::vector<double> &nozzles,
                                       unsigned int physical_1based);
 
+// 1-based filament (physical or Mix) → 1-based physical for geometric lookup.
+// filament_id 0 → 0 (support "current tool"; compose with spectrum_nozzle_mm_for_physical
+//   unsigned-wrap → front, same as Slicing.cpp get_at(size_t(-1))).
+// Physical in [1, num_physical] → unchanged.
+// Defined mix → component_a (first recipe physical, clamp_component) — not resolve(layer).
+// Null mgr / undefined Mix / num_physical == 0 → 1 (refuse-as-front).
+// Never returns a Mix ID. Compose nozzle as:
+//   spectrum_nozzle_mm_for_physical(nozzles, spectrum_physical_for_filament(...)).
+unsigned int spectrum_physical_for_filament(unsigned int               filament_id_1based,
+                                            size_t                     num_physical,
+                                            const MixedFilamentManager *mgr);
+unsigned int spectrum_physical_for_filament(unsigned int      filament_id_1based,
+                                            size_t            num_physical,
+                                            const std::string &serialized_definitions);
+
 // Explicit Bias xa/xb wins (either nonzero disables synthesized `,p` for both).
 // Else if perimeter_modulation: A → -mag, B → +mag, else 0.
 float spectrum_perimeter_mod_offset(const MixedFilament &mf,
