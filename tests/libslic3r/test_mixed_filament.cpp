@@ -2181,3 +2181,57 @@ TEST_CASE("older FullSpec mN+oN without u still translates pattern", "[MixedFila
     REQUIRE(mgr.mixed_filaments().front().gradient_enabled == false);
     REQUIRE(mgr.mixed_filaments().front().ratio_b != 50);
 }
+
+TEST_CASE("spectrum mix ID geometric physical mapping", "[spectrum_mix_id_geom]")
+{
+    using Catch::Matchers::WithinAbs;
+    const std::vector<double> hetero{0.4, 0.6, 0.6, 0.8};
+    const size_t              np = 4;
+
+    MixedFilamentManager pair;
+    pair.load_definitions("2,3,1,1,1");
+    REQUIRE(spectrum_physical_for_filament(5, np, &pair) == 2);
+    REQUIRE(spectrum_physical_for_filament(5, np, &pair) != 5);
+    REQUIRE_THAT(spectrum_nozzle_mm_for_physical(
+                     hetero, spectrum_physical_for_filament(5, np, &pair)),
+                 WithinAbs(0.6, 1e-6));
+
+    MixedFilamentManager three;
+    three.load_definitions("2,3,1,1,1,c4");
+    REQUIRE(spectrum_physical_for_filament(5, np, &three) == 2);
+
+    MixedFilamentManager pat;
+    pat.load_definitions("2,3,1,1,1,21");
+    REQUIRE(spectrum_physical_for_filament(5, np, &pat) == 2);
+
+    REQUIRE(spectrum_physical_for_filament(99, np, static_cast<const MixedFilamentManager *>(nullptr)) == 1);
+    REQUIRE_THAT(spectrum_nozzle_mm_for_physical(
+                     hetero, spectrum_physical_for_filament(99, np, std::string{})),
+                 WithinAbs(0.4, 1e-6));
+
+    REQUIRE(spectrum_physical_for_filament(1, np, &pair) == 1);
+    REQUIRE_THAT(spectrum_nozzle_mm_for_physical(hetero, 1), WithinAbs(0.4, 1e-6));
+    REQUIRE(spectrum_physical_for_filament(4, np, &pair) == 4);
+    REQUIRE_THAT(spectrum_nozzle_mm_for_physical(hetero, 4), WithinAbs(0.8, 1e-6));
+    REQUIRE(spectrum_physical_for_filament(0, np, &pair) == 0);
+    REQUIRE_THAT(spectrum_nozzle_mm_for_physical(hetero, 0), WithinAbs(0.4, 1e-6));
+
+    MixedFilamentManager a1;
+    a1.load_definitions("1,2,1,1,1");
+    const std::vector<std::vector<double>> uniforms{
+        {0.4, 0.4, 0.4, 0.4},
+        {0.6, 0.6, 0.6, 0.6},
+        {0.8, 0.8, 0.8, 0.8},
+    };
+    for (const auto &vec : uniforms) {
+        const float mapped = spectrum_nozzle_mm_for_physical(
+            vec, spectrum_physical_for_filament(5, np, &a1));
+        const float phys1 = spectrum_nozzle_mm_for_physical(vec, 1);
+        REQUIRE_THAT(mapped, WithinAbs(phys1, 1e-6));
+        REQUIRE_THAT(spectrum_nozzle_mm_for_physical(vec, 1), WithinAbs(float(vec[0]), 1e-6));
+        REQUIRE_THAT(spectrum_nozzle_mm_for_physical(vec, 4), WithinAbs(float(vec[3]), 1e-6));
+    }
+
+    REQUIRE(spectrum_physical_for_filament(5, np, std::string("2,3,1,1,1")) ==
+            spectrum_physical_for_filament(5, np, &pair));
+}

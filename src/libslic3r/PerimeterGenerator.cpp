@@ -13,6 +13,7 @@
 #include "ExPolygonCollection.hpp"
 #include "Geometry.hpp"
 #include "Line.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cassert>
 #include <unordered_set>
@@ -620,7 +621,11 @@ void PerimeterGenerator::split_top_surfaces(const ExPolygons &orig_polygons, ExP
     // get the real top surface
     ExPolygons grown_lower_slices;
     ExPolygons bridge_checker;
-    auto nozzle_diameter = this->print_config->nozzle_diameter.get_at(this->config->outer_wall_filament_id - 1);
+    const unsigned int outer_phys = spectrum_physical_for_filament(
+        unsigned(std::max(0, int(this->config->outer_wall_filament_id))),
+        this->print_config->filament_diameter.size(),
+        this->print_config->mixed_filament_definitions.value);
+    auto nozzle_diameter = spectrum_nozzle_mm_for_physical(this->print_config->nozzle_diameter.values, outer_phys);
     // Check whether surface be bridge or not
     if (this->lower_slices != NULL) {
         // BBS: get the Polygons below the polygon this layer
@@ -1173,7 +1178,11 @@ void PerimeterGenerator::process_classic()
         // We consider overhang any part where the entire nozzle diameter is not supported by the
         // lower layer, so we take lower slices and offset them by half the nozzle diameter used
         // in the current layer
-        double nozzle_diameter = this->print_config->nozzle_diameter.get_at(this->config->outer_wall_filament_id - 1);
+        const unsigned int outer_phys = spectrum_physical_for_filament(
+            unsigned(std::max(0, int(this->config->outer_wall_filament_id))),
+            this->print_config->filament_diameter.size(),
+            this->print_config->mixed_filament_definitions.value);
+        double nozzle_diameter = spectrum_nozzle_mm_for_physical(this->print_config->nozzle_diameter.values, outer_phys);
         m_lower_slices_polygons = offset(*this->lower_slices, float(scale_(+nozzle_diameter / 2)));
     }
 
@@ -2114,7 +2123,11 @@ void PerimeterGenerator::process_arachne()
         // We consider overhang any part where the entire nozzle diameter is not supported by the
         // lower layer, so we take lower slices and offset them by half the nozzle diameter used
         // in the current layer
-        double nozzle_diameter = this->print_config->nozzle_diameter.get_at(this->config->outer_wall_filament_id - 1);
+        const unsigned int outer_phys = spectrum_physical_for_filament(
+            unsigned(std::max(0, int(this->config->outer_wall_filament_id))),
+            this->print_config->filament_diameter.size(),
+            this->print_config->mixed_filament_definitions.value);
+        double nozzle_diameter = spectrum_nozzle_mm_for_physical(this->print_config->nozzle_diameter.values, outer_phys);
         m_lower_slices_polygons = offset(*this->lower_slices, float(scale_(+nozzle_diameter / 2)));
     }
 
@@ -2547,7 +2560,11 @@ bool PerimeterGeneratorLoop::is_internal_contour() const
 
 std::vector<Polygons> PerimeterGenerator::generate_lower_polygons_series(float width)
 {
-    float nozzle_diameter = print_config->nozzle_diameter.get_at(config->outer_wall_filament_id - 1);
+    const unsigned int outer_phys = spectrum_physical_for_filament(
+        unsigned(std::max(0, int(config->outer_wall_filament_id))),
+        print_config->filament_diameter.size(),
+        print_config->mixed_filament_definitions.value);
+    float nozzle_diameter = spectrum_nozzle_mm_for_physical(print_config->nozzle_diameter.values, outer_phys);
     float start_offset = -0.5 * width;
     float end_offset = 0.5 * nozzle_diameter;
 

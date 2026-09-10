@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <limits>
 
 #include "libslic3r.h"
 #include "Slicing.hpp"
 #include "SlicingAdaptive.hpp"
 #include "PrintConfig.hpp"
+#include "MixedFilament.hpp"
 #include "Model.hpp"
 
 // #define SLIC3R_DEBUG
@@ -70,12 +72,17 @@ SlicingParameters SlicingParameters::create_from_config(
         object_config.layer_height.value : print_config.initial_layer_print_height.value;
 
     // If object_config.support_filament == 0 resp. object_config.support_interface_filament == 0,
-    // print_config.nozzle_diameter.get_at(size_t(-1)) returns the 0th nozzle diameter,
-    // which is consistent with the requirement that if support_filament == 0 resp. support_interface_filament == 0,
-    // support will not trigger tool change, but it will use the current nozzle instead.
-    // In that case all the nozzles have to be of the same diameter.
-    coordf_t support_material_extruder_dmr           = print_config.nozzle_diameter.get_at(object_config.support_filament.value - 1);
-    coordf_t support_material_interface_extruder_dmr = print_config.nozzle_diameter.get_at(object_config.support_interface_filament.value - 1);
+    // spectrum_physical_for_filament returns 0 and spectrum_nozzle_mm_for_physical unsigned-wraps
+    // to front(), matching print_config.nozzle_diameter.get_at(size_t(-1)).
+    // Mix IDs map to component_a. Physical IDs pass through.
+    const size_t       np    = print_config.filament_diameter.size();
+    const std::string &defs  = print_config.mixed_filament_definitions.value;
+    const unsigned int support_phys = spectrum_physical_for_filament(
+        unsigned(std::max(0, object_config.support_filament.value)), np, defs);
+    const unsigned int interface_phys = spectrum_physical_for_filament(
+        unsigned(std::max(0, object_config.support_interface_filament.value)), np, defs);
+    coordf_t support_material_extruder_dmr           = spectrum_nozzle_mm_for_physical(print_config.nozzle_diameter.values, support_phys);
+    coordf_t support_material_interface_extruder_dmr = spectrum_nozzle_mm_for_physical(print_config.nozzle_diameter.values, interface_phys);
 
     // ORCA: store Z distance
     const coordf_t support_top_z_gap    = object_config.support_top_z_distance.value;
@@ -123,12 +130,15 @@ SlicingParameters SlicingParameters::create_from_config(
     params.max_layer_height = std::numeric_limits<double>::max();
     if (object_config.enable_support.value || params.base_raft_layers > 0 || object_config.enforce_support_layers > 0) {
         // Has some form of support. Add the support layers to the minimum / maximum layer height limits.
+        // Mix IDs map to component_a; 0 stays 0 (get_at wrap → front).
+        const int support_idx   = int(support_phys);
+        const int interface_idx = int(interface_phys);
         params.min_layer_height = std::max(
-            min_layer_height_from_nozzle(print_config, object_config.support_filament), 
-            min_layer_height_from_nozzle(print_config, object_config.support_interface_filament));
+            min_layer_height_from_nozzle(print_config, support_idx),
+            min_layer_height_from_nozzle(print_config, interface_idx));
         params.max_layer_height = std::min(
-            max_layer_height_from_nozzle(print_config, object_config.support_filament), 
-            max_layer_height_from_nozzle(print_config, object_config.support_interface_filament));
+            max_layer_height_from_nozzle(print_config, support_idx),
+            max_layer_height_from_nozzle(print_config, interface_idx));
         params.max_suport_layer_height = params.max_layer_height;
     }
 

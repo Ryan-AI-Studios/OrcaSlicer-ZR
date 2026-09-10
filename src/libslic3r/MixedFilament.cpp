@@ -786,6 +786,34 @@ float spectrum_nozzle_mm_for_physical(const std::vector<double> &nozzles, unsign
     return (i < nozzles.size()) ? float(nozzles[i]) : float(nozzles.front());
 }
 
+unsigned int spectrum_physical_for_filament(unsigned int               filament_id_1based,
+                                            size_t                     num_physical,
+                                            const MixedFilamentManager *mgr)
+{
+    if (filament_id_1based == 0)
+        return 0;
+    if (num_physical == 0)
+        return 1;
+    if (filament_id_1based <= num_physical)
+        return filament_id_1based;
+    if (mgr == nullptr)
+        return 1;
+    const MixedFilament *mf = mgr->mixed_filament_from_id(filament_id_1based, num_physical);
+    if (mf == nullptr)
+        return 1;
+    return clamp_component(mf->component_a, num_physical);
+}
+
+unsigned int spectrum_physical_for_filament(unsigned int      filament_id_1based,
+                                            size_t            num_physical,
+                                            const std::string &serialized_definitions)
+{
+    MixedFilamentManager mgr;
+    if (!serialized_definitions.empty())
+        mgr.load_definitions(serialized_definitions);
+    return spectrum_physical_for_filament(filament_id_1based, num_physical, &mgr);
+}
+
 float spectrum_perimeter_mod_offset(const MixedFilament &mf, unsigned int physical_1based, float nozzle_mm)
 {
     const float xa = mf.component_a_surface_offset;
