@@ -54,12 +54,21 @@ std::string spectrum_collapse_mix_recipe_rows(
     const std::vector<ColorRGB> &physicals,
     size_t mix_base);
 
+// World +Z front test (0067). Inverse-transpose of world.linear(); flip if det < 0.
+// Degenerate / non-finite local normal ⇒ false. Front iff n_world.z() > eps (default 1e-4).
+bool spectrum_picprint_is_front_face(const Vec3d &local_normal, const Transform3d &world, double eps = 1e-4);
+
 // Original-triangle planar XY paint. World = instance matrix * volume matrix.
 // Refuses when XY extent < 1e-6. Does not select_patch / subdivide.
+// front_faces_only (default true): skip facets that fail the world +Z test; do not set_facet them.
+// Prior MMU paint is deserialized so skipped facets keep their state (empty ⇒ NONE).
+// skipped_out, if set, receives the number of facets skipped by the front filter.
 bool spectrum_picprint_apply_to_volume(ModelVolume &vol,
                                        const Transform3d &world,
                                        const BoundingBoxf3 &xy_bbox,
-                                       const SpectrumPicPrintPlan &plan);
+                                       const SpectrumPicPrintPlan &plan,
+                                       bool front_faces_only = true,
+                                       size_t *skipped_out = nullptr);
 
 // Flat plate sized to the picture aspect, contained in `fill` of the bed (default 80%).
 // nx/ny are the top-face grid (one cell per downsampled pixel).

@@ -471,18 +471,55 @@ std::string spectrum_collapse_mix_recipe_rows(
     return serialize_recipe_rows(unique_rows);
 }
 
+bool spectrum_picprint_is_front_face(const Vec3d &local_normal, const Transform3d &world, double eps)
+{
+    if (!local_normal.allFinite() || local_normal.norm() < 1e-12)
+        return false;
+    const Eigen::Matrix3d linear = world.linear();
+    Eigen::Matrix3d       inv;
+    bool                  invertible = false;
+    linear.computeInverseWithCheck(inv, invertible, 1e-12);
+    if (!invertible)
+        return false;
+    Vec3d n_world = (inv.transpose() * local_normal);
+    if (!n_world.allFinite() || n_world.norm() < 1e-12)
+        return false;
+    n_world.normalize();
+    if (linear.determinant() < 0.0)
+        n_world = -n_world;
+    return n_world.z() > eps;
+}
+
 bool spectrum_picprint_apply_to_volume(ModelVolume &vol,
                                        const Transform3d &world,
                                        const BoundingBoxf3 &xy_bbox,
-                                       const SpectrumPicPrintPlan &plan)
+                                       const SpectrumPicPrintPlan &plan,
+                                       bool front_faces_only,
+                                       size_t *skipped_out)
 {
+    if (skipped_out != nullptr)
+        *skipped_out = 0;
     if (!plan.valid)
         return false;
 
     const indexed_triangle_set &its = vol.mesh().its;
     TriangleSelector selector(vol.mesh());
+    if (!vol.mmu_segmentation_facets.empty())
+        selector.deserialize(vol.mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+
+    const std::vector<Vec3f> face_normals = front_faces_only ? its_face_normals(its) : std::vector<Vec3f>{};
+    size_t                   skipped      = 0;
     const int n = int(its.indices.size());
     for (int i = 0; i < n; ++i) {
+        if (front_faces_only) {
+            Vec3d local_n = Vec3d::Zero();
+            if (size_t(i) < face_normals.size())
+                local_n = face_normals[size_t(i)].cast<double>();
+            if (!spectrum_picprint_is_front_face(local_n, world)) {
+                ++skipped;
+                continue;
+            }
+        }
         const stl_triangle_vertex_indices &tri = its.indices[size_t(i)];
         Vec3d centroid = Vec3d::Zero();
         for (int k = 0; k < 3; ++k)
@@ -498,6 +535,8 @@ bool spectrum_picprint_apply_to_volume(ModelVolume &vol,
             dest = 1;
         selector.set_facet(i, EnforcerBlockerType(dest));
     }
+    if (skipped_out != nullptr)
+        *skipped_out = skipped;
     vol.mmu_segmentation_facets.set(selector);
     return true;
 }
