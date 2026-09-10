@@ -92,6 +92,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/OfdCatalogDialog.hpp
     GUI/SpectrumMatchConfirmDialog.cpp
     GUI/SpectrumMatchConfirmDialog.hpp
+    GUI/SpectrumPhysicalRemapDialog.cpp
+    GUI/SpectrumPhysicalRemapDialog.hpp
     GUI/ConfigManipulation.cpp
     GUI/ConfigManipulation.hpp
     GUI/ConfigWizard.cpp

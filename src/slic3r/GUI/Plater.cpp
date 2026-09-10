@@ -75,6 +75,7 @@
 #include "libslic3r/MixedFilamentMatch.hpp"
 #include "libslic3r/SpectrumAutoGraft.hpp"
 #include "libslic3r/MixedFilamentPaintBake.hpp"
+#include "libslic3r/SpectrumPhysicalRemap.hpp"
 #include "libslic3r/MixedFilamentPicPrint.hpp"
 #include "libslic3r/MixedFilamentSwatch.hpp"
 #include "libslic3r/SLAPrint.hpp"
@@ -140,6 +141,7 @@
 #include "MixedFilamentDialog.hpp"
 #include "OfdCatalogDialog.hpp"
 #include "SpectrumMatchConfirmDialog.hpp"
+#include "SpectrumPhysicalRemapDialog.hpp"
 #include "ProjectDirtyStateManager.hpp"
 #include "Gizmos/GLGizmoSimplify.hpp" // create suggestion notification
 #include "Gizmos/GLGizmoSVG.hpp" // Drop SVG file
@@ -1647,6 +1649,39 @@ bool spectrum_model_has_paint(const Model &model)
         }
     }
     return false;
+}
+
+SpectrumPhysicalRemapContext make_physical_remap_ctx(PresetBundle *bundle,
+                                                     const std::vector<std::string> &incoming_file_colours)
+{
+    SpectrumPhysicalRemapContext ctx;
+    if (bundle == nullptr)
+        return ctx;
+    if (const ConfigOptionStrings *fc = bundle->project_config.option<ConfigOptionStrings>("filament_colour"))
+        ctx.dest_hexes = fc->values;
+    ctx.physical_n = ctx.dest_hexes.size();
+    if (const ConfigOptionStrings *src =
+            bundle->project_config.option<ConfigOptionStrings>("spectrum_source_filament_colour"))
+        ctx.source_hexes = src->values;
+    if (ctx.source_hexes.empty())
+        ctx.source_hexes = incoming_file_colours;
+    ctx.source_n = ctx.source_hexes.size();
+    std::string mixed_defs;
+    if (const ConfigOptionString *opt =
+            bundle->project_config.option<ConfigOptionString>("mixed_filament_definitions"))
+        mixed_defs = opt->value;
+    if (mixed_defs.empty()) {
+        if (const ConfigOptionString *opt =
+                bundle->prints.get_edited_preset().config.option<ConfigOptionString>("mixed_filament_definitions"))
+            mixed_defs = opt->value;
+    }
+    ctx.mix_defs_nonempty = !mixed_defs.empty();
+    MixedFilamentManager mgr;
+    mgr.load_definitions(mixed_defs);
+    ctx.enabled_mix_count = mgr.enabled_count();
+    if (const ConfigOptionBool *mapped = bundle->project_config.option<ConfigOptionBool>("spectrum_paint_mapped"))
+        ctx.paint_mapped = mapped->value;
+    return ctx;
 }
 
 } // namespace
@@ -5250,6 +5285,7 @@ struct Plater::priv
     std::vector<char> m_ofd_slot_user_override;
     bool              m_ofd_mix_seed_prompted{false};
     int               m_ofd_last_filament_idx{0};
+    std::vector<std::string> incoming_file_filament_colours;
 
     //BBS: add print project related logic
     void update_fff_scene_only_shells(bool only_shells = true);
@@ -6724,6 +6760,9 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             if (const ConfigOptionStrings *ft =
                                     config_loaded.option<ConfigOptionStrings>("filament_type"))
                                 source_filament_types = ft->values;
+                            if (const ConfigOptionStrings *fc =
+                                    config_loaded.option<ConfigOptionStrings>("filament_colour"))
+                                incoming_file_filament_colours = fc->values;
                         }
 
                         config.apply(static_cast<const ConfigBase &>(FullPrintConfig::defaults()));
@@ -12764,7 +12803,9 @@ void Plater::load_project(wxString const& filename2,
             maybe_ofd_mix_seed_prompt();
     }
     if (!res.empty() && load_config && !is_restore && !is_silence) {
-        CallAfter([this]() {
+        std::vector<std::string> incoming_file_colours = p->incoming_file_filament_colours;
+        p->incoming_file_filament_colours.clear();
+        CallAfter([this, incoming_file_colours]() {
             if (model().objects.empty())
                 return;
             PresetBundle *bundle = wxGetApp().preset_bundle;
@@ -12801,28 +12842,30 @@ void Plater::load_project(wxString const& filename2,
                     bundle->project_config.option<ConfigOptionBool>("spectrum_paint_mapped"))
                 already_mapped = mapped->value;
 
-            if (!spectrum_should_prompt_convert(enabled_mix_count, paint_nonempty, filament_n, source_n,
-                                                already_mapped, false))
-                return;
-
-            MessageDialog dlg(
-                this,
-                _L("This project has painted colours and more than four filaments or source colours, with no mix recipes.\n\n"
-                   "Convert may Adopt to Ultra S 4-slot first; if you cancel Match afterwards, Adopt is kept and paint stays unmapped."),
-                _L("Convert painted colours"),
-                wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
-            dlg.SetButtonLabel(wxID_YES, _L("Convert"));
-            dlg.SetButtonLabel(wxID_NO, _L("Keep original"));
-            if (dlg.ShowModal() != wxID_YES)
-                return;
-
-            size_t live_filament_n = 0;
-            if (const ConfigOptionStrings *fc =
-                    wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour"))
-                live_filament_n = fc->values.size();
-            if (live_filament_n > 4)
-                adopt_to_zr_ultra_s_cmyk(false);
-            map_painted_colors_to_cmyk_mixes();
+            bool converted = false;
+            if (spectrum_should_prompt_convert(enabled_mix_count, paint_nonempty, filament_n, source_n,
+                                               already_mapped, false)) {
+                MessageDialog dlg(
+                    this,
+                    _L("This project has painted colours and more than four filaments or source colours, with no mix recipes.\n\n"
+                       "Convert may Adopt to Ultra S 4-slot first; if you cancel Match afterwards, Adopt is kept and paint stays unmapped."),
+                    _L("Convert painted colours"),
+                    wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
+                dlg.SetButtonLabel(wxID_YES, _L("Convert"));
+                dlg.SetButtonLabel(wxID_NO, _L("Keep original"));
+                if (dlg.ShowModal() == wxID_YES) {
+                    size_t live_filament_n = 0;
+                    if (const ConfigOptionStrings *fc =
+                            wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour"))
+                        live_filament_n = fc->values.size();
+                    if (live_filament_n > 4)
+                        adopt_to_zr_ultra_s_cmyk(false, false);
+                    map_painted_colors_to_cmyk_mixes();
+                    converted = true;
+                }
+            }
+            if (!converted)
+                maybe_prompt_physical_paint_remap(incoming_file_colours);
         });
     }
 }
@@ -13025,7 +13068,29 @@ void Plater::auto_graft_leq4_onto_ultra_s(const std::vector<std::string> &dest_c
                             << (filament_colour ? filament_colour->values.size() : size_t(0));
 }
 
-void Plater::adopt_to_zr_ultra_s_cmyk(bool show_map_hint)
+void Plater::maybe_prompt_physical_paint_remap(const std::vector<std::string> &incoming_file_colours)
+{
+    PresetBundle *bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr || model().objects.empty())
+        return;
+
+    const SpectrumPhysicalRemapContext ctx = make_physical_remap_ctx(bundle, incoming_file_colours);
+    if (ctx.physical_n == 0 || spectrum_physical_remap_should_skip(model(), ctx))
+        return;
+
+    SpectrumPhysicalRemapDialog dlg(this, model(), ctx);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    take_snapshot("Remap painted colors to loaded filaments");
+    const size_t max_filament_id = ctx.physical_n + ctx.enabled_mix_count;
+    spectrum_physical_remap_apply(model(), dlg.state_map(), true, ctx.physical_n, max_filament_id);
+    on_config_change(bundle->full_config());
+    schedule_background_process();
+    sidebar().obj_list()->update_objects_list_filament_column(wxGetApp().filaments_cnt());
+}
+
+void Plater::adopt_to_zr_ultra_s_cmyk(bool show_map_hint, bool prompt_physical_remap)
 {
     PresetBundle *bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr)
@@ -13144,11 +13209,19 @@ void Plater::adopt_to_zr_ultra_s_cmyk(bool show_map_hint)
                             << " process=" << bundle->prints.get_edited_preset().name
                             << " filament=" << filament_name;
 
-    if (show_map_hint) {
+    std::vector<std::string> source_hexes;
+    if (const ConfigOptionStrings *src =
+            bundle->project_config.option<ConfigOptionStrings>("spectrum_source_filament_colour"))
+        source_hexes = src->values;
+    const bool will_remap = prompt_physical_remap &&
+        !spectrum_physical_remap_should_skip(model(), make_physical_remap_ctx(bundle, source_hexes));
+    if (show_map_hint && !will_remap) {
         MessageDialog(this,
             _L("Paint still uses source slot IDs 5–8. Use File → Map painted colors to CMYK mixes to turn those regions into C/M/Y/K physicals and Mix 5+. Slice/print of this file is not this command's goal."),
             _L("Adopt to ZR Ultra S"), wxOK | wxICON_WARNING).ShowModal();
     }
+    if (will_remap)
+        maybe_prompt_physical_paint_remap(source_hexes);
 }
 
 void Plater::apply_rgbw_filament_colours()
