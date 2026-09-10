@@ -374,6 +374,8 @@ set(lisbslic3r_sources
     prusa_fdm_mixer.hpp
     MixedFilamentPaintBake.cpp
     MixedFilamentPaintBake.hpp
+    SpectrumPhysicalRemap.cpp
+    SpectrumPhysicalRemap.hpp
     MixedFilamentPicPrint.cpp
     MixedFilamentPicPrint.hpp
     LocalZPlanner.hpp

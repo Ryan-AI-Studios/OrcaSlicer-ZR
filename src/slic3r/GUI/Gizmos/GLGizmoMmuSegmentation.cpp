@@ -14,6 +14,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/MixedFilament.hpp"
 #include "libslic3r/MixedFilamentMatch.hpp"
+#include "libslic3r/SpectrumPhysicalRemap.hpp"
 #include "libslic3r/Color.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "GLGizmoUtils.hpp"
@@ -1135,7 +1136,8 @@ void GLGizmoMmuSegmentation::update_used_filaments()
 
 void GLGizmoMmuSegmentation::render_filament_remap_ui(float window_width, float max_tooltip_width, float scale)
 {
-    size_t n_extr = std::min((size_t)EnforcerBlockerType::ExtruderMax, m_extruders_colors.size());
+    const size_t physical_n = m_physical_extruder_count > 0 ? m_physical_extruder_count : m_extruders_colors.size();
+    size_t n_extr = std::min((size_t)EnforcerBlockerType::ExtruderMax, physical_n);
 
     int displayed_count = 0;
     const int max_per_line = 8;
@@ -1236,11 +1238,14 @@ void GLGizmoMmuSegmentation::remap_filament_assignments()
     for (size_t i = 0; i <= MAX_EBT; ++i)
         state_map[i] = static_cast<EnforcerBlockerType>(i);
 
-    size_t n_extr = std::min(m_extruder_remap.size(), MAX_EBT);
+    const size_t physical_n = m_physical_extruder_count > 0 ? m_physical_extruder_count : m_extruder_remap.size();
+    size_t n_extr = std::min(std::min(m_extruder_remap.size(), MAX_EBT), physical_n);
     const int start_extruder = (int) EnforcerBlockerType::Extruder1;
     bool   any_change = false;
     for (size_t src = 0; src < n_extr; ++src) {
         size_t dst = m_extruder_remap[src];
+        if (dst >= physical_n)
+            dst = src;
         if (dst != src) {
             state_map[src+start_extruder] = static_cast<EnforcerBlockerType>(dst+start_extruder);
             any_change     = true;
@@ -1258,40 +1263,24 @@ void GLGizmoMmuSegmentation::remap_filament_assignments()
     ModelObject* mo = m_c->selection_info()->model_object();
     if (!mo) return;
 
+    const size_t max_filament_id =
+        MixedFilamentManager::max_filament_id(current_mixed_filament_definitions(), physical_n);
+    spectrum_physical_remap_apply_object(*mo, state_map, true, physical_n, max_filament_id);
+
     bool volume_extruder_changed = false;
 
     for (ModelVolume* mv : mo->volumes) {
         if (!mv->is_model_part()) continue;
         ++idx;
-        TriangleSelectorGUI* ts = m_triangle_selectors[idx].get();
-        if (!ts) continue;
-
-        // Remap painted triangles
-        ts->remap_triangle_state(state_map);
-        ts->request_update_render_data(true);
-
-        // ORCA: Remap base volume extruder as well if selected
-        int current_ext_id = mv->extruder_id();
-        int current_idx = (current_ext_id > 0) ? current_ext_id - 1 : 0;
-
-        if (current_idx >= 0 && current_idx < m_extruder_remap.size()) {
-            size_t dest_idx = m_extruder_remap[current_idx];
-            if (dest_idx != current_idx) {
-                // Check if volume has its own extruder config or uses object's fallback                                                                                                                                            
-                const ConfigOption *vol_opt = mv->config.option("extruder");                                                                                                                                                        
-                if (vol_opt != nullptr && vol_opt->getInt() != 0) {                                                                                                                                                                 
-                    // Volume has its own extruder setting, update it                                                                                                                                                               
-                    mv->config.set("extruder", (int)dest_idx + 1);                                                                                                                                                                  
-                } else {                                                                                                                                                                                                            
-                    // Volume uses object's extruder setting, update the object                                                                                                                                                     
-                    mo->config.set("extruder", (int)dest_idx + 1);                                                                                                                                                                  
-                }      
-                if (idx < m_volumes_extruder_idxs.size())
-                    m_volumes_extruder_idxs[idx] = (int)dest_idx + 1;
-                volume_extruder_changed = true;
-            }
+        TriangleSelectorGUI* ts = (idx >= 0 && size_t(idx) < m_triangle_selectors.size())
+            ? m_triangle_selectors[idx].get() : nullptr;
+        if (ts) {
+            ts->deserialize(mv->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+            ts->request_update_render_data(true);
         }
-
+        if (idx < int(m_volumes_extruder_idxs.size()))
+            m_volumes_extruder_idxs[idx] = mv->extruder_id();
+        volume_extruder_changed = true;
         updated = true;
     }
 

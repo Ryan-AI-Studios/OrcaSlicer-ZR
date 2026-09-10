@@ -314,7 +314,8 @@ public:
     // BBS: save & backup
     void load_project(wxString const & filename = "", wxString const & originfile = "-");
     int save_project(bool saveAs = false);
-    void adopt_to_zr_ultra_s_cmyk(bool show_map_hint = true);
+    void adopt_to_zr_ultra_s_cmyk(bool show_map_hint = true, bool prompt_physical_remap = true);
+    void maybe_prompt_physical_paint_remap(const std::vector<std::string> &incoming_file_colours);
     void apply_rgbw_filament_colours();
     void apply_ofd_catalog_hexes(int slot, const std::vector<std::string> &hexes);
     void set_ofd_slot_user_override(int idx, bool value);
