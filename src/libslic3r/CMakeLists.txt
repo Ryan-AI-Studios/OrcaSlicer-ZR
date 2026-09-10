@@ -363,6 +363,8 @@ set(lisbslic3r_sources
     MixedFilamentCookbook.hpp
     MixedFilamentOfd.cpp
     MixedFilamentOfd.hpp
+    MixedFilamentFc.cpp
+    MixedFilamentFc.hpp
     MixedFilamentMatch.cpp
     MixedFilamentMatch.hpp
     MixedFilamentSwatch.cpp

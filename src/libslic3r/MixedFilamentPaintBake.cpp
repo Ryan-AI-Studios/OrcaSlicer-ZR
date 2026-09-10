@@ -2,6 +2,7 @@
 
 #include "MixedFilament.hpp"
 #include "MixedFilamentMatch.hpp"
+#include "MixedFilamentFc.hpp"
 #include "Model.hpp"
 #include "PrintConfig.hpp"
 
@@ -53,6 +54,13 @@ SpectrumPaintBakePlan plan_spectrum_paint_bake(
     std::unordered_map<std::string, std::vector<size_t>> recipe_sources;
     recipe_sources.reserve(source_hexes.size());
 
+    spectrum_fc_ensure_session_loaded();
+    std::vector<float> td_storage;
+    const std::vector<float> *td =
+        spectrum_fc_td_for_match(spectrum_fc_session_store(), slots, td_storage);
+    SwatchLUT        fallback = spectrum_fc_fallback_lut(nullptr, spectrum_fc_session_store());
+    const SwatchLUT *use_lut  = fallback.entries.empty() ? nullptr : &fallback;
+
     for (size_t src = 1; src <= source_hexes.size(); ++src) {
         const std::string normalized = normalize_mix_match_hex(source_hexes[src - 1]);
         ColorRGB target;
@@ -65,7 +73,7 @@ SpectrumPaintBakePlan plan_spectrum_paint_bake(
             continue;
         }
 
-        const MixMatchResult match = match_printable_mix(target, slots, nullptr, 4, 70);
+        const MixMatchResult match = match_printable_mix(target, slots, td, 4, 70, use_lut);
         if (!match.valid || (match.kind == MixMatchResult::Kind::Mix && match.recipe_row.empty())) {
             BOOST_LOG_TRIVIAL(warning) << "spectrum paint bake: match failed for source index " << src
                                        << "; mapping to physical 1";

@@ -14,6 +14,7 @@
 #include "libslic3r/MixedFilamentCookbook.hpp"
 #include "libslic3r/MixedFilamentMatch.hpp"
 #include "libslic3r/MixedFilamentSwatch.hpp"
+#include "libslic3r/MixedFilamentFc.hpp"
 #include "libslic3r/MixedFilamentPaintBake.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Model.hpp"
@@ -638,7 +639,13 @@ void MixedFilamentDialog::refresh_candidates(bool preserve_selection)
     } else if (m_lut_status != nullptr) {
         m_lut_status->SetLabel(wxEmptyString);
     }
-    m_candidates = match_printable_candidates(target, physicals, nullptr, 4, min_pct, 12, 100, lut);
+    spectrum_fc_ensure_session_loaded();
+    std::vector<float> td_storage;
+    const std::vector<float> *td =
+        spectrum_fc_td_for_match(spectrum_fc_session_store(), physicals, td_storage);
+    SwatchLUT          fallback = spectrum_fc_fallback_lut(lut, spectrum_fc_session_store());
+    const SwatchLUT   *use_lut  = fallback.entries.empty() ? lut : &fallback;
+    m_candidates = match_printable_candidates(target, physicals, td, 4, min_pct, 12, 100, use_lut);
     m_candidates_target       = target;
     m_candidates_target_valid = true;
 
