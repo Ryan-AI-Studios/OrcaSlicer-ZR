@@ -72,6 +72,7 @@
 #include "libslic3r/MixedFilament.hpp"
 #include "libslic3r/MixedFilamentCookbook.hpp"
 #include "libslic3r/MixedFilamentOfd.hpp"
+#include "libslic3r/MixedFilamentFc.hpp"
 #include "libslic3r/MixedFilamentMatch.hpp"
 #include "libslic3r/SpectrumAutoGraft.hpp"
 #include "libslic3r/MixedFilamentPaintBake.hpp"
@@ -2192,7 +2193,7 @@ Sidebar::Sidebar(Plater *parent)
             idx = 0;
         OfdCatalogDialog dlg(this, idx);
         if (dlg.ShowModal() == wxID_OK && p->plater)
-            p->plater->apply_ofd_catalog_hexes(dlg.filament_idx(), dlg.selected().color_hexes);
+            p->plater->apply_ofd_catalog_pick(dlg.filament_idx(), dlg.selected());
     });
     p->m_bpButton_ofd_catalog = ofd_catalog;
     bSizer39->Add(ofd_catalog, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(4));
@@ -5285,6 +5286,8 @@ struct Plater::priv
     std::vector<char> m_ofd_slot_user_override;
     bool              m_ofd_mix_seed_prompted{false};
     int               m_ofd_last_filament_idx{0};
+    std::vector<SpectrumOfdVariant> m_ofd_slot_picks;
+    std::shared_ptr<bool>           m_fc_fetch_alive{std::make_shared<bool>(true)};
     std::vector<std::string> incoming_file_filament_colours;
 
     //BBS: add print project related logic
@@ -5917,6 +5920,8 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
 Plater::priv::~priv()
 {
+    if (m_fc_fetch_alive)
+        *m_fc_fetch_alive = false;
     if (config != nullptr)
         delete config;
     // Saves the database of visited (already shown) hints into hints.ini.
@@ -8091,6 +8096,7 @@ void Plater::priv::reset(bool apply_presets_change)
     m_ofd_slot_user_override.clear();
     m_ofd_mix_seed_prompted = false;
     m_ofd_last_filament_idx = 0;
+    m_ofd_slot_picks.clear();
 
     // Mix list follows resolved defs after project reset (New Project / load_project prefix).
     sidebar->refresh_color_mixing_list();
@@ -13352,6 +13358,99 @@ void Plater::apply_ofd_catalog_hexes(int slot, const std::vector<std::string> &h
     sidebar().obj_list()->update_filament_colors();
 
     maybe_ofd_mix_seed_prompt();
+}
+
+namespace {
+
+void apply_fc_match_to_store(int slot, const SpectrumOfdVariant &pick, const SpectrumFcSwatch &hit)
+{
+    spectrum_fc_ensure_session_loaded();
+    SpectrumFcOverlayStore store = spectrum_fc_session_store();
+    SpectrumFcOverlaySlot  row;
+    row.slot  = slot;
+    row.key   = spectrum_fc_match_key(pick.brand, pick.variant,
+                                     !pick.material.empty() ? pick.material : pick.filament);
+    row.lab_l = hit.L;
+    row.lab_a = hit.a;
+    row.lab_b = hit.b;
+    row.td    = hit.td;
+    spectrum_fc_upsert_slot(store, row);
+    spectrum_fc_set_session_store(store);
+    spectrum_fc_save(store);
+}
+
+void fetch_fc_swatches(int                                     slot,
+                       const SpectrumOfdVariant               &pick,
+                       std::shared_ptr<bool>                   alive,
+                       std::vector<SpectrumFcSwatch>           acc,
+                       int                                     pages_left,
+                       const std::string                      &url)
+{
+    Http::get(url)
+        .size_limit(8ull * 1024ull * 1024ull)
+        .timeout_connect(15)
+        .timeout_max(60)
+        .on_complete([slot, pick, alive, acc, pages_left](std::string body, unsigned status) mutable {
+            if (!alive || !*alive)
+                return;
+            if (status != 200 || body.empty())
+                return;
+            auto page = spectrum_fc_parse_swatch_list(body);
+            acc.insert(acc.end(), page.begin(), page.end());
+            const std::string next = spectrum_fc_parse_next_url(body);
+            if (!next.empty() && pages_left > 0) {
+                fetch_fc_swatches(slot, pick, alive, std::move(acc), pages_left - 1, next);
+                return;
+            }
+            const auto hit = spectrum_fc_match(pick, acc);
+            if (!hit)
+                return;
+            wxGetApp().CallAfter([slot, pick, hit, alive]() {
+                if (!alive || !*alive)
+                    return;
+                apply_fc_match_to_store(slot, pick, *hit);
+            });
+        })
+        .on_error([alive](std::string, std::string, unsigned) {
+            (void) alive;
+        })
+        .perform();
+}
+
+} // namespace
+
+void Plater::apply_ofd_catalog_pick(int slot, const SpectrumOfdVariant &pick)
+{
+    apply_ofd_catalog_hexes(slot, pick.color_hexes);
+    if (slot < 0)
+        return;
+    if (p->m_ofd_slot_picks.size() <= size_t(slot))
+        p->m_ofd_slot_picks.resize(size_t(slot) + 1);
+    p->m_ofd_slot_picks[size_t(slot)] = pick;
+
+    if (pick.brand.empty())
+        return;
+    spectrum_fc_ensure_session_loaded();
+    auto              alive = p->m_fc_fetch_alive;
+    const std::string murl  =
+        std::string("https://filamentcolors.xyz/api/manufacturer/?name=") + Http::url_encode(pick.brand);
+    Http::get(murl)
+        .size_limit(2ull * 1024ull * 1024ull)
+        .timeout_connect(15)
+        .timeout_max(30)
+        .on_complete([slot, pick, alive](std::string body, unsigned status) {
+            if (!alive || !*alive || status != 200 || body.empty())
+                return;
+            const auto id = spectrum_fc_parse_manufacturer_id(body);
+            if (!id)
+                return;
+            const std::string surl = "https://filamentcolors.xyz/api/swatch/?manufacturer=" + std::to_string(*id);
+            fetch_fc_swatches(slot, pick, alive, {}, 4, surl);
+        })
+        .on_error([alive](std::string, std::string, unsigned) {
+            (void) alive;
+        })
+        .perform();
 }
 
 void Plater::maybe_ofd_mix_seed_prompt()

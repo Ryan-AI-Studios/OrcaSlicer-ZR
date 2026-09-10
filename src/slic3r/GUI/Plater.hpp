@@ -48,6 +48,7 @@ class ModelInstance;
 class Print;
 class SLAPrint;
 struct SpectrumMixDialogUndoKeys;
+struct SpectrumOfdVariant;
 //BBS: add partplatelist and SlicingStatusEvent
 class PartPlateList;
 class SlicingStatusEvent;
@@ -318,6 +319,7 @@ public:
     void maybe_prompt_physical_paint_remap(const std::vector<std::string> &incoming_file_colours);
     void apply_rgbw_filament_colours();
     void apply_ofd_catalog_hexes(int slot, const std::vector<std::string> &hexes);
+    void apply_ofd_catalog_pick(int slot, const SpectrumOfdVariant &pick);
     void set_ofd_slot_user_override(int idx, bool value);
     bool is_ofd_slot_user_override(int idx) const;
     void set_ofd_last_filament_idx(int idx);

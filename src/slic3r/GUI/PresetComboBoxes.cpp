@@ -857,7 +857,7 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
                 OfdCatalogDialog dlg(this, m_filament_idx);
                 if (dlg.ShowModal() == wxID_OK) {
                     if (Plater *plater = wxGetApp().plater())
-                        plater->apply_ofd_catalog_hexes(dlg.filament_idx(), dlg.selected().color_hexes);
+                        plater->apply_ofd_catalog_pick(dlg.filament_idx(), dlg.selected());
                 }
                 return; // Catalog Apply queues EVT; cancel does not.
             } else if (chooser_rc == OfdColorChooserDialog::ID_CUSTOM) {

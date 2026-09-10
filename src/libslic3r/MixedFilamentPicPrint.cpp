@@ -1,6 +1,7 @@
 #include "MixedFilamentPicPrint.hpp"
 
 #include "MixedFilamentMatch.hpp"
+#include "MixedFilamentFc.hpp"
 #include "Model.hpp"
 #include "TriangleSelector.hpp"
 
@@ -348,8 +349,15 @@ SpectrumPicPrintPlan plan_spectrum_picprint(
     std::unordered_map<std::string, std::vector<size_t>> recipe_sources;
     recipe_sources.reserve(centroids.size());
 
+    spectrum_fc_ensure_session_loaded();
+    std::vector<float> td_storage;
+    const std::vector<float> *td =
+        spectrum_fc_td_for_match(spectrum_fc_session_store(), slots, td_storage);
+    SwatchLUT        fallback = spectrum_fc_fallback_lut(lut, spectrum_fc_session_store());
+    const SwatchLUT *use_lut  = fallback.entries.empty() ? lut : &fallback;
+
     for (size_t c = 0; c < centroids.size(); ++c) {
-        const MixMatchResult match = match_printable_mix(centroids[c], slots, nullptr, 4, 70, lut);
+        const MixMatchResult match = match_printable_mix(centroids[c], slots, td, 4, 70, use_lut);
         if (!match.valid || (match.kind == MixMatchResult::Kind::Mix && match.recipe_row.empty())) {
             cluster_dest[c] = 1;
             continue;

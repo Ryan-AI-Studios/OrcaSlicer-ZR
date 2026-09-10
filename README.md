@@ -68,3 +68,4 @@ ZR Spectrum includes OrcaSlicer. Wiki, calibration guides, and the wider Orca co
 - The **Bambu networking plugin** uses non-free Bambu Lab libraries. It is optional.
 - Vendors [prusa-fdm-mixer](https://github.com/prusa3d/prusa-fdm-mixer) (MIT). Not official Prusa ColorMix / PrusaSlicer.
 - Ships a seed of [Open Filament Database](https://github.com/OpenFilamentCollective/open-filament-database) (MIT) colour hexes.
+- Optional [FilamentColors.xyz](https://filamentcolors.xyz/) Lab/TD overlay data (CC BY 4.0). Never required for Catalog hex.

@@ -113,6 +113,7 @@ void CopyrightsDialog::fill_entries()
         { "PrusaSlicer",                                    "",      "https://www.prusa3d.com" },
         { "prusa-fdm-mixer",                                "",      "https://github.com/prusa3d/prusa-fdm-mixer" },
         { "Open Filament Database",                         "",      "https://github.com/OpenFilamentCollective/open-filament-database" },
+        { "FilamentColors.xyz",                             "CC BY 4.0", "https://filamentcolors.xyz/" },
         { "Real-Time DXT1/DXT5 C compression library",      "",      "https://github.com/Cyan4973/RygsDXTc" },
         { "SemVer",                                         "",      "https://semver.org" },
         { "Shinyprofiler",                                  "",      "https://code.google.com/p/shinyprofiler" },
