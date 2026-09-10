@@ -13706,11 +13706,14 @@ void Plater::picprint()
         p->m_spectrum_map_undo = SpectrumMapUndoRecord{};
     }
 
+    size_t skipped_faces = 0;
     for (ModelVolume *vol : obj->volumes) {
         if (vol == nullptr || vol->mesh().empty())
             continue;
         const Transform3d world = inst->get_matrix() * vol->get_matrix();
-        spectrum_picprint_apply_to_volume(*vol, world, xy_bbox, plan);
+        size_t skipped = 0;
+        spectrum_picprint_apply_to_volume(*vol, world, xy_bbox, plan, true, &skipped);
+        skipped_faces += skipped;
     }
     if (p->view3D)
         p->view3D->reload_scene(true);
@@ -13730,6 +13733,7 @@ void Plater::picprint()
                                 << " mix_count=" << plan.mix_count
                                 << " cluster_count=" << plan.cluster_count
                                 << " size=" << plan.width << "x" << plan.height
+                                << " skipped_faces=" << skipped_faces
                                 << " clusters=" << cluster_list;
         if (cluster_list.find(SPECTRUM_OPAQUE_BLEND_MARKER) != std::string::npos)
             MessageDialog(this, wxString::FromUTF8(cluster_list.c_str()), _L("PicPrint mixes"),
@@ -13758,7 +13762,7 @@ void Plater::picprint_on_selected()
     }
 
     MessageDialog confirm(this,
-        _L("PicPrint paints the selected object with FS mixes on planar XY (top/bottom of a Z-up mesh, not a standing side unless you rotate/lay the object flat first). Back faces are mirrored in v1. Uses original-triangle resolution (dense mesh). Not a lithophane / HueForge export."),
+        _L("PicPrint paints the selected object with FS mixes on planar XY (top of a Z-up mesh, not a standing side unless you rotate/lay the object flat first). Uses original-triangle resolution (dense mesh). Not a lithophane / HueForge export."),
         _L("PicPrint on Selected"), wxYES_NO | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_YES)
         return;
@@ -13885,11 +13889,14 @@ void Plater::picprint_on_selected()
         p->m_spectrum_map_undo = SpectrumMapUndoRecord{};
     }
 
+    size_t skipped_faces = 0;
     for (ModelVolume *vol : obj->volumes) {
         if (vol == nullptr || vol->mesh().empty())
             continue;
         const Transform3d world = inst->get_matrix() * vol->get_matrix();
-        spectrum_picprint_apply_to_volume(*vol, world, xy_bbox, plan);
+        size_t skipped = 0;
+        spectrum_picprint_apply_to_volume(*vol, world, xy_bbox, plan, true, &skipped);
+        skipped_faces += skipped;
     }
     if (p->view3D)
         p->view3D->reload_scene(true);
@@ -13909,6 +13916,7 @@ void Plater::picprint_on_selected()
                                 << " mix_count=" << plan.mix_count
                                 << " cluster_count=" << plan.cluster_count
                                 << " size=" << plan.width << "x" << plan.height
+                                << " skipped_faces=" << skipped_faces
                                 << " clusters=" << cluster_list;
         if (cluster_list.find(SPECTRUM_OPAQUE_BLEND_MARKER) != std::string::npos)
             MessageDialog(this, wxString::FromUTF8(cluster_list.c_str()), _L("PicPrint mixes"),

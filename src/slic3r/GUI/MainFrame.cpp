@@ -2762,7 +2762,7 @@ void MainFrame::init_menubar_as_editor()
             [this]() { return m_plater != nullptr; }, this);
 
         append_menu_item(fileMenu, wxID_ANY, _L("PicPrint on Selected") + dots,
-            _L("Paint the selected object with FS mixes on planar XY (rotate/lay the object flat first; back faces are mirrored). Not a lithophane"),
+            _L("Paint the selected object with FS mixes on planar XY (rotate/lay the object flat first). Not a lithophane"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->picprint_on_selected(); }, "", nullptr,
             [this]() { return m_plater && !m_plater->model().objects.empty(); }, this);
 

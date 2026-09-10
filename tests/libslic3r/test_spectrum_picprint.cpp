@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "libslic3r/Color.hpp"
@@ -71,6 +72,36 @@ bool picprint_apply_front_volume(ModelObject &obj, const SpectrumPicPrintPlan &p
     const BoundingBoxf3 xy_bbox = obj.instance_bounding_box(*inst);
     const Transform3d world = inst->get_matrix() * vol->get_matrix();
     return spectrum_picprint_apply_to_volume(*vol, world, xy_bbox, plan);
+}
+
+size_t count_front_facets(const indexed_triangle_set &its, const Transform3d &world)
+{
+    const std::vector<Vec3f> normals = its_face_normals(its);
+    size_t                   n       = 0;
+    for (const Vec3f &fn : normals) {
+        if (spectrum_picprint_is_front_face(fn.cast<double>(), world))
+            ++n;
+    }
+    return n;
+}
+
+std::pair<size_t, size_t> painted_front_back(const ModelVolume &vol, const Transform3d &world)
+{
+    TriangleSelector sel(vol.mesh());
+    sel.deserialize(vol.mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+    size_t front = 0;
+    size_t back  = 0;
+    for (int st = 1; st <= int(EnforcerBlockerType::ExtruderMax); ++st) {
+        const indexed_triangle_set its = sel.get_facets(EnforcerBlockerType(st));
+        const std::vector<Vec3f>   nrm = its_face_normals(its);
+        for (const Vec3f &fn : nrm) {
+            if (spectrum_picprint_is_front_face(fn.cast<double>(), world))
+                ++front;
+            else
+                ++back;
+        }
+    }
+    return {front, back};
 }
 
 } // namespace
@@ -268,7 +299,7 @@ TEST_CASE("PicPrint apply paints original facets from world XY", "[spectrum_picp
     ModelVolume *vol = obj->volumes.front();
 
     BoundingBoxf3 bb = vol->mesh().bounding_box();
-    REQUIRE(spectrum_picprint_apply_to_volume(*vol, Transform3d::Identity(), bb, plan));
+    REQUIRE(spectrum_picprint_apply_to_volume(*vol, Transform3d::Identity(), bb, plan, false));
 
     TriangleSelector sel(vol->mesh());
     sel.deserialize(vol->mmu_segmentation_facets.get_data());
@@ -357,7 +388,7 @@ TEST_CASE("PicPrint make_plate is a dense watertight grid not Loop-smoothed", "[
         REQUIRE_FALSE(obj->volumes.empty());
         ModelVolume *vol = obj->volumes.front();
         BoundingBoxf3 bb = vol->mesh().bounding_box();
-        REQUIRE(spectrum_picprint_apply_to_volume(*vol, Transform3d::Identity(), bb, plan));
+        REQUIRE(spectrum_picprint_apply_to_volume(*vol, Transform3d::Identity(), bb, plan, false));
 
         TriangleSelector sel(vol->mesh());
         sel.deserialize(vol->mmu_segmentation_facets.get_data());
@@ -497,4 +528,152 @@ TEST_CASE("PicPrint apply keeps original triangle count", "[spectrum_picprint]")
         REQUIRE(obj->volumes.front()->mesh().its.indices.size() == plate_tris);
         REQUIRE(obj->volumes.front()->is_mm_painted());
     }
+}
+
+TEST_CASE("PicPrint front-face helper uses world +Z", "[spectrum_picprint]")
+{
+    const Transform3d id = Transform3d::Identity();
+    REQUIRE(spectrum_picprint_is_front_face(Vec3d::UnitZ(), id));
+    REQUIRE_FALSE(spectrum_picprint_is_front_face(-Vec3d::UnitZ(), id));
+    REQUIRE_FALSE(spectrum_picprint_is_front_face(Vec3d::UnitX(), id));
+    REQUIRE_FALSE(spectrum_picprint_is_front_face(Vec3d::Zero(), id));
+
+    Transform3d rot = Transform3d::Identity();
+    rot.rotate(Eigen::AngleAxisd(PI, Vec3d::UnitX()));
+    REQUIRE_FALSE(spectrum_picprint_is_front_face(Vec3d::UnitZ(), rot));
+    REQUIRE(spectrum_picprint_is_front_face(-Vec3d::UnitZ(), rot));
+
+    Transform3d mirror = Transform3d::Identity();
+    mirror.linear() = Eigen::DiagonalMatrix<double, 3>(1., 1., -1.);
+    REQUIRE(spectrum_picprint_is_front_face(Vec3d::UnitZ(), mirror));
+}
+
+TEST_CASE("PicPrint filter on paints +Z not -Z or walls", "[spectrum_picprint]")
+{
+    const std::vector<std::uint8_t> rgb  = two_colour_8x2();
+    const SpectrumPicPrintPlan      plan = plan_spectrum_picprint(rgb.data(), 8, 2, panchroma_physicals(), 4);
+    REQUIRE(plan.valid);
+
+    Model model;
+    ModelObject *obj = model.add_object("picprint_filter_cube", "", make_cube(10., 10., 10.));
+    REQUIRE(obj != nullptr);
+    obj->add_instance();
+    ModelVolume *vol = obj->volumes.front();
+    const Transform3d world = Transform3d::Identity();
+    BoundingBoxf3     bb    = vol->mesh().bounding_box();
+    const size_t      n     = vol->mesh().its.indices.size();
+    REQUIRE(n == 12);
+    const size_t front_n = count_front_facets(vol->mesh().its, world);
+    REQUIRE(front_n == 2);
+
+    REQUIRE(spectrum_picprint_apply_to_volume(*vol, world, bb, plan));
+
+    TriangleSelector sel(vol->mesh());
+    sel.deserialize(vol->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+    REQUIRE(sel.num_facets(EnforcerBlockerType(0)) == int(n - front_n));
+    const auto painted = painted_front_back(*vol, world);
+    REQUIRE(painted.first == front_n);
+    REQUIRE(painted.second == 0);
+    REQUIRE(vol->is_mm_painted());
+}
+
+TEST_CASE("PicPrint filter on rotated instance paints world +Z", "[spectrum_picprint]")
+{
+    const std::vector<std::uint8_t> rgb  = two_colour_8x2();
+    const SpectrumPicPrintPlan      plan = plan_spectrum_picprint(rgb.data(), 8, 2, panchroma_physicals(), 4);
+    REQUIRE(plan.valid);
+
+    Model model;
+    ModelObject *obj = model.add_object("picprint_rot_cube", "", make_cube(10., 10., 10.));
+    REQUIRE(obj != nullptr);
+    obj->add_instance();
+    ModelVolume *vol = obj->volumes.front();
+    Transform3d world = Transform3d::Identity();
+    world.rotate(Eigen::AngleAxisd(PI, Vec3d::UnitX()));
+    BoundingBoxf3 bb = vol->mesh().bounding_box();
+    const size_t  front_n = count_front_facets(vol->mesh().its, world);
+    REQUIRE(front_n == 2);
+
+    REQUIRE(spectrum_picprint_apply_to_volume(*vol, world, bb, plan));
+
+    TriangleSelector sel(vol->mesh());
+    sel.deserialize(vol->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+    REQUIRE(sel.num_facets(EnforcerBlockerType(0)) == int(vol->mesh().its.indices.size() - front_n));
+    const auto painted = painted_front_back(*vol, world);
+    REQUIRE(painted.first == front_n);
+    REQUIRE(painted.second == 0);
+}
+
+TEST_CASE("PicPrint filter on keeps pre-painted back face", "[spectrum_picprint]")
+{
+    const std::vector<std::uint8_t> rgb  = two_colour_8x2();
+    const SpectrumPicPrintPlan      plan = plan_spectrum_picprint(rgb.data(), 8, 2, panchroma_physicals(), 4);
+    REQUIRE(plan.valid);
+
+    Model model;
+    ModelObject *obj = model.add_object("picprint_prepaint_cube", "", make_cube(10., 10., 10.));
+    REQUIRE(obj != nullptr);
+    obj->add_instance();
+    ModelVolume *vol = obj->volumes.front();
+    const Transform3d world = Transform3d::Identity();
+    const std::vector<Vec3f> normals = its_face_normals(vol->mesh().its);
+    int back_i = -1;
+    for (int i = 0; i < int(normals.size()); ++i) {
+        if (!spectrum_picprint_is_front_face(normals[size_t(i)].cast<double>(), world)) {
+            back_i = i;
+            break;
+        }
+    }
+    REQUIRE(back_i >= 0);
+
+    TriangleSelector pre(vol->mesh());
+    pre.set_facet(back_i, EnforcerBlockerType(5));
+    REQUIRE(vol->mmu_segmentation_facets.set(pre));
+    {
+        TriangleSelector check(vol->mesh());
+        check.deserialize(vol->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+        REQUIRE(check.num_facets(EnforcerBlockerType(5)) == 1);
+    }
+
+    BoundingBoxf3 bb = vol->mesh().bounding_box();
+    REQUIRE(spectrum_picprint_apply_to_volume(*vol, world, bb, plan));
+
+    TriangleSelector sel(vol->mesh());
+    sel.deserialize(vol->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+    REQUIRE(sel.num_facets(EnforcerBlockerType(5)) == 1);
+    const auto painted = painted_front_back(*vol, world);
+    REQUIRE(painted.first >= 1);
+}
+
+TEST_CASE("PicPrint filter on plate paints top not bottom or walls", "[spectrum_picprint]")
+{
+    const std::vector<std::uint8_t> rgb  = two_colour_8x2();
+    const SpectrumPicPrintPlan      plan = plan_spectrum_picprint(rgb.data(), 8, 2, panchroma_physicals(), 4);
+    REQUIRE(plan.valid);
+
+    SpectrumPicPrintPlate spec;
+    spec.width_mm     = 16.;
+    spec.depth_mm     = 4.;
+    spec.thickness_mm = 2.;
+    spec.nx           = 8;
+    spec.ny           = 2;
+    TriangleMesh mesh = spectrum_picprint_make_plate(spec);
+    Model model;
+    ModelObject *obj = model.add_object("picprint_filter_plate", "", mesh);
+    REQUIRE(obj != nullptr);
+    obj->add_instance();
+    ModelVolume *vol = obj->volumes.front();
+    const Transform3d world = Transform3d::Identity();
+    BoundingBoxf3     bb    = vol->mesh().bounding_box();
+    const size_t      front_n = count_front_facets(vol->mesh().its, world);
+    REQUIRE(front_n == size_t(2 * 8 * 2));
+
+    REQUIRE(spectrum_picprint_apply_to_volume(*vol, world, bb, plan));
+
+    TriangleSelector sel(vol->mesh());
+    sel.deserialize(vol->mmu_segmentation_facets.get_data(), true, EnforcerBlockerType::ExtruderMax);
+    REQUIRE(sel.num_facets(EnforcerBlockerType(0)) == int(vol->mesh().its.indices.size() - front_n));
+    const auto painted = painted_front_back(*vol, world);
+    REQUIRE(painted.first == front_n);
+    REQUIRE(painted.second == 0);
 }
